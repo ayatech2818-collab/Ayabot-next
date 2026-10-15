@@ -93,16 +93,33 @@ export class AudioQueue {
   private nextPlayTime: number = 0;
   private activeSources: AudioBufferSourceNode[] = [];
 
+  private analyser: AnalyserNode | null = null;
+  private analyserData = new Uint8Array(256);
+  private playbackLevel = 0;
+
+  get currentPlaybackLevel(): number {
+    return this.playbackLevel;
+  }
+
   /** True when audio is currently being played through speakers */
   get isPlaying(): boolean {
     return this.activeSources.length > 0;
   }
 
   constructor() {
-    // Initialize context only on user interaction if possible, or gracefully fallback
     if (typeof window !== 'undefined') {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioContext = new AudioContextClass({ sampleRate: 24000 }); // Gemini default response is 24kHz
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+      this.audioContext = new AudioContextClass({
+        sampleRate: 24000,
+      });
+
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.65;
+      this.analyser.connect(this.audioContext.destination);
     }
   }
 
@@ -114,7 +131,7 @@ export class AudioQueue {
 
   playBase64PCM(base64: string, sampleRate = 24000) {
     if (!this.audioContext) return;
-    
+
     // Resume context if needed
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume();
@@ -122,13 +139,13 @@ export class AudioQueue {
 
     const uint8Data = base64ToUint8Array(base64);
     const float32Data = pcm16ToFloat32(uint8Data);
-    
+
     const audioBuffer = this.audioContext.createBuffer(1, float32Data.length, sampleRate);
     audioBuffer.getChannelData(0).set(float32Data);
 
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
+    source.connect(this.analyser ?? this.audioContext.destination);
 
     // Track active sources for stopping
     source.onended = () => {
@@ -145,7 +162,7 @@ export class AudioQueue {
     source.start(this.nextPlayTime);
     this.nextPlayTime += audioBuffer.duration;
   }
-  
+
   stop() {
     // Stop all currently playing audio chunks
     this.activeSources.forEach(source => {
@@ -156,7 +173,8 @@ export class AudioQueue {
       }
     });
     this.activeSources = [];
-    
+    this.playbackLevel = 0;
+
     // Reset next play time to current time
     if (this.audioContext) {
       this.nextPlayTime = this.audioContext.currentTime;
@@ -168,8 +186,31 @@ export class AudioQueue {
       if (this.audioContext.state !== 'closed') {
         this.audioContext.close();
       }
+
       this.audioContext = null;
     }
+
+    this.playbackLevel = 0;
+  }
+
+  updatePlaybackLevel(): number {
+    if (!this.analyser || this.activeSources.length === 0) {
+      this.playbackLevel = 0;
+      return 0;
+    }
+
+    this.analyser.getByteTimeDomainData(this.analyserData);
+
+    let sum = 0;
+
+    for (const sample of this.analyserData) {
+      const value = (sample - 128) / 128;
+      sum += value * value;
+    }
+
+    this.playbackLevel = Math.sqrt(sum / this.analyserData.length);
+
+    return this.playbackLevel;
   }
 }
 
@@ -178,7 +219,7 @@ export class AudioRecorder {
   private context: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
   public onAudioData: ((base64Data: string) => void) | null = null;
-  
+
   // Local VAD Callbacks
   public onSilence: (() => void) | null = null;
   public onSpeech: (() => void) | null = null;
@@ -202,21 +243,23 @@ export class AudioRecorder {
   private readonly SEND_CHUNK_SIZE = 4096; // 4096 samples at 16kHz = 256ms
 
   async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({ 
+    this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         sampleRate: 16000,
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true
-      } 
+      }
     });
 
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     this.context = new AudioContextClass({ sampleRate: 16000 });
-    
+
     const source = this.context.createMediaStreamSource(this.stream);
-    
+
     // High-pass filter: 200Hz (blocks low-end rumble and mechanical noise)
     const hpFilter = this.context.createBiquadFilter();
     hpFilter.type = 'highpass';
@@ -234,12 +277,12 @@ export class AudioRecorder {
     compressor.ratio.value = 12;
     compressor.attack.value = 0.003;
     compressor.release.value = 0.25;
-    
+
     const blob = new Blob([AudioWorkletSrc], { type: 'application/javascript' });
     const blobURL = URL.createObjectURL(blob);
-    
+
     await this.context.audioWorklet.addModule(blobURL);
-    
+
     this.workletNode = new AudioWorkletNode(this.context, 'pcm-processor');
     this.workletNode.port.onmessage = (event) => {
       if (this.onAudioData) {
@@ -252,17 +295,17 @@ export class AudioRecorder {
           this.smoothedRms = 0;
           return;
         }
-        
+
         // VAD Logic (RMS calculation with smoothing)
         let sumSquares = 0;
         for (let i = 0; i < int16Array.length; i++) {
           sumSquares += int16Array[i] * int16Array[i];
         }
         const rms = Math.sqrt(sumSquares / int16Array.length);
-        
+
         // EMA smoothing for RMS to avoid jitter
         this.smoothedRms = this.RMS_ALPHA * rms + (1 - this.RMS_ALPHA) * this.smoothedRms;
-        
+
         const chunkDurationMs = (int16Array.length / 16000) * 1000;
 
         if (this.smoothedRms > this.SILENCE_THRESHOLD) {

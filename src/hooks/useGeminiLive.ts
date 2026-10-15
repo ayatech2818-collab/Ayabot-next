@@ -4,15 +4,20 @@ import { AYADI_SYSTEM_PROMPT } from '../constants/prompts';
 
 const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
 const MODEL_NAME = "gemini-2.5-flash-native-audio-preview-09-2025";
+// const MODEL_NAME = "gemini-3.1-flash-live-preview";
 const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 
 export function useGeminiLive() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  
+
   const wsRef = useRef<WebSocket | null>(null);
   const audioQueueRef = useRef<AudioQueue | null>(null);
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
+
+  const getPlaybackLevel = useCallback(() => {
+    return audioQueueRef.current?.updatePlaybackLevel() ?? 0;
+  }, []);
 
   const disconnect = useCallback(() => {
     if (wsRef.current) {
@@ -33,7 +38,7 @@ export function useGeminiLive() {
 
   const connect = useCallback(async () => {
     if (isConnected) return;
-    
+
     if (!API_KEY) {
       console.error("Missing NEXT_PUBLIC_GEMINI_API_KEY environment variable.");
       return;
@@ -43,9 +48,9 @@ export function useGeminiLive() {
       // Initialize audio tools
       audioQueueRef.current = new AudioQueue();
       await audioQueueRef.current.resume();
-      
+
       audioRecorderRef.current = new AudioRecorder();
-      
+
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
@@ -71,42 +76,42 @@ export function useGeminiLive() {
             }
           }
         };
-        
+
         ws.send(JSON.stringify(configMessage));
 
         // Start microphone and attach callback
         await audioRecorderRef.current?.start();
         if (audioRecorderRef.current) {
-           
-           audioRecorderRef.current.onSilence = () => {
-             // Let Gemini's server-side VAD handle response triggering.
-             // Manual turnComplete injections currently cause API 1011 parsing errors.
-             setIsSpeaking(false);
-           };
 
-           audioRecorderRef.current.onSpeech = () => {
-              // User has started speaking — stop bot audio and re-enable mic
-              audioQueueRef.current?.stop();
-              setIsSpeaking(false);
-              if (audioRecorderRef.current) {
-                audioRecorderRef.current.suppressVAD = false;
-              }
-            };
+          audioRecorderRef.current.onSilence = () => {
+            // Let Gemini's server-side VAD handle response triggering.
+            // Manual turnComplete injections currently cause API 1011 parsing errors.
+            setIsSpeaking(false);
+          };
 
-           audioRecorderRef.current.onAudioData = (base64Data) => {
-              // Always send audio to Gemini (its server-side VAD needs the stream)
-              // But skip sending while bot is speaking (echo suppression)
-              if (ws.readyState === WebSocket.OPEN && !audioRecorderRef.current?.suppressVAD) {
-                ws.send(JSON.stringify({
-                  realtimeInput: {
-                    mediaChunks: [{
-                      data: base64Data,
-                      mimeType: 'audio/pcm;rate=16000'
-                    }]
-                  }
-                }));
-              }
-            };
+          audioRecorderRef.current.onSpeech = () => {
+            // User has started speaking — stop bot audio and re-enable mic
+            audioQueueRef.current?.stop();
+            setIsSpeaking(false);
+            if (audioRecorderRef.current) {
+              audioRecorderRef.current.suppressVAD = false;
+            }
+          };
+
+          audioRecorderRef.current.onAudioData = (base64Data) => {
+            // Always send audio to Gemini (its server-side VAD needs the stream)
+            // But skip sending while bot is speaking (echo suppression)
+            if (ws.readyState === WebSocket.OPEN && !audioRecorderRef.current?.suppressVAD) {
+              ws.send(JSON.stringify({
+                realtimeInput: {
+                  mediaChunks: [{
+                    data: base64Data,
+                    mimeType: 'audio/pcm;rate=16000'
+                  }]
+                }
+              }));
+            }
+          };
         }
       };
 
@@ -125,7 +130,7 @@ export function useGeminiLive() {
 
           if (response.serverContent) {
             const serverContent = response.serverContent;
-            
+
             // Check for Audio
             if (serverContent.modelTurn?.parts) {
               setIsSpeaking(true);
@@ -154,7 +159,7 @@ export function useGeminiLive() {
 
             // Transcriptions
             if (serverContent.interrupted) {
-                 audioQueueRef.current?.stop();
+              audioQueueRef.current?.stop();
             }
           }
         } catch (err) {
@@ -180,6 +185,7 @@ export function useGeminiLive() {
   return {
     isConnected,
     isSpeaking,
+    getPlaybackLevel,
     connect,
     disconnect
   };
