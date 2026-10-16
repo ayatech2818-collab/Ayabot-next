@@ -1,0 +1,77 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg);
+  transition: background-color 0.4s ease;
+}
+
+.glowA,
+.glowB {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  transition: opacity 0.4s ease;
+}
+
+.glowA {
+  width: 60vw;
+  height: 60vw;
+  left: -12vw;
+  top: -18vw;
+  background: var(--glow-a);
+}
+
+.glowB {
+  width: 55vw;
+  height: 55vw;
+  right: -14vw;
+  bottom: -22vw;
+  background: var(--glow-b);
+}
+
+.grid {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+  background-size: 26px 26px;
+  mask-image: radial-gradient(ellipse at 50% 40%, #000 0%, transparent 75%);
+}
+
+.stars {
+  position: absolute;
+  inset: 0;
+  opacity: var(--stars-opacity);
+  transition: opacity 0.4s ease;
+}
+
+.star {
+  position: absolute;
+  border-radius: 50%;
+  background: #dff6ff;
+  animation: twinkle ease-in-out infinite;
+}
+
+.star:nth-child(9n) {
+  background: #7deaff;
+  box-shadow: 0 0 6px #22d3ee;
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star {
+    animation: none;
+    opacity: 0.6;
+  }
+}

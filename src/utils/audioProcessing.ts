@@ -88,14 +88,33 @@ class PCMProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-processor', PCMProcessor);
 `;
 
+/** Snapshot of the speech Aya is playing right now, used to drive lip-sync. */
+export type SpeechFeatures = {
+  /** Time-domain RMS of the output, roughly 0..0.3 for speech. */
+  level: number;
+  /** Share of speech energy at 150–900 Hz (open vowels like "ah", "oh"). */
+  low: number;
+  /** Share at 900–2800 Hz (front vowels like "ee", "eh"). */
+  mid: number;
+  /** Share at 2800–8000 Hz (fricatives like "s", "sh", "f"). */
+  high: number;
+  /** Power-weighted spectral centroid in Hz (0 when silent). */
+  centroid: number;
+};
+
+const SILENT_FEATURES: SpeechFeatures = { level: 0, low: 0, mid: 0, high: 0, centroid: 0 };
+
 export class AudioQueue {
   private audioContext: AudioContext | null = null;
   private nextPlayTime: number = 0;
   private activeSources: AudioBufferSourceNode[] = [];
 
   private analyser: AnalyserNode | null = null;
-  private analyserData = new Uint8Array(256);
+  private outputGain: GainNode | null = null;
+  private analyserData = new Uint8Array(512);
+  private frequencyData = new Float32Array(256);
   private playbackLevel = 0;
+  private volume = 1;
 
   get currentPlaybackLevel(): number {
     return this.playbackLevel;
@@ -117,9 +136,24 @@ export class AudioQueue {
       });
 
       this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.65;
-      this.analyser.connect(this.audioContext.destination);
+      // 512 samples at 24 kHz ≈ 21 ms windows with 47 Hz bins: fine enough to tell vowels apart.
+      this.analyser.fftSize = 512;
+      // Light smoothing keeps the spectrum responsive for syllable-level lip movement.
+      this.analyser.smoothingTimeConstant = 0.35;
+
+      // The analyser sits before the volume gain so lip-sync stays visible at low volume.
+      this.outputGain = this.audioContext.createGain();
+      this.outputGain.gain.value = this.volume;
+      this.analyser.connect(this.outputGain);
+      this.outputGain.connect(this.audioContext.destination);
+    }
+  }
+
+  /** Set speaker volume between 0 (silent) and 1 (full). */
+  setVolume(value: number) {
+    this.volume = Math.min(1, Math.max(0, value));
+    if (this.outputGain && this.audioContext) {
+      this.outputGain.gain.setTargetAtTime(this.volume, this.audioContext.currentTime, 0.02);
     }
   }
 
@@ -212,6 +246,42 @@ export class AudioQueue {
 
     return this.playbackLevel;
   }
+
+  /** Loudness plus a coarse spectral breakdown of the audio playing now. */
+  getSpeechFeatures(): SpeechFeatures {
+    const level = this.updatePlaybackLevel();
+    if (!this.analyser || !this.audioContext || level < 0.002) return SILENT_FEATURES;
+
+    this.analyser.getFloatFrequencyData(this.frequencyData);
+    const binHz = this.audioContext.sampleRate / this.analyser.fftSize;
+
+    let low = 0;
+    let mid = 0;
+    let high = 0;
+    let weighted = 0;
+    for (let i = 0; i < this.frequencyData.length; i++) {
+      const hz = i * binHz;
+      if (hz < 150 || hz > 8000) continue;
+      const db = this.frequencyData[i];
+      if (!Number.isFinite(db)) continue;
+      const power = Math.pow(10, db / 10);
+      weighted += power * hz;
+      if (hz < 900) low += power;
+      else if (hz < 2800) mid += power;
+      else high += power;
+    }
+
+    const total = low + mid + high;
+    if (total <= 0) return { ...SILENT_FEATURES, level };
+    return {
+      level,
+      low: low / total,
+      mid: mid / total,
+      high: high / total,
+      centroid: weighted / total,
+    };
+  }
+
 }
 
 export class AudioRecorder {
@@ -227,6 +297,12 @@ export class AudioRecorder {
   /** Set to true while bot audio is playing to suppress echo detection */
   public suppressVAD: boolean = false;
 
+  /** Timestamp (ms) of the last chunk that crossed the voice threshold. */
+  public lastVoiceAt: number = 0;
+
+  /** When muted, no audio is analysed or sent. */
+  private isMuted: boolean = false;
+
   private isSpeaking: boolean = false;
   private silenceMs: number = 0;
   private smoothedRms: number = 0;
@@ -236,6 +312,29 @@ export class AudioRecorder {
 
   get speaking(): boolean {
     return this.isSpeaking;
+  }
+
+  /** Smoothed microphone RMS in 16-bit sample units (0 while muted or suppressed). */
+  get inputLevel(): number {
+    return this.smoothedRms;
+  }
+
+  get muted(): boolean {
+    return this.isMuted;
+  }
+
+  setMuted(muted: boolean) {
+    this.isMuted = muted;
+    this.stream?.getAudioTracks().forEach(track => {
+      track.enabled = !muted;
+    });
+    if (muted) {
+      this.isSpeaking = false;
+      this.silenceMs = 0;
+      this.smoothedRms = 0;
+      this.audioBuffer = [];
+      this.audioBufferLength = 0;
+    }
   }
 
   private audioBuffer: Int16Array[] = [];
@@ -251,6 +350,9 @@ export class AudioRecorder {
         noiseSuppression: true,
         autoGainControl: true
       }
+    });
+    this.stream.getAudioTracks().forEach(track => {
+      track.enabled = !this.isMuted;
     });
 
     const AudioContextClass =
@@ -288,8 +390,8 @@ export class AudioRecorder {
       if (this.onAudioData) {
         const int16Array = new Int16Array(event.data);
 
-        // Skip all VAD and audio sending while bot is speaking (echo suppression)
-        if (this.suppressVAD) {
+        // Skip all VAD and audio sending while muted or while bot is speaking (echo suppression)
+        if (this.suppressVAD || this.isMuted) {
           this.isSpeaking = false;
           this.silenceMs = 0;
           this.smoothedRms = 0;
@@ -309,6 +411,7 @@ export class AudioRecorder {
         const chunkDurationMs = (int16Array.length / 16000) * 1000;
 
         if (this.smoothedRms > this.SILENCE_THRESHOLD) {
+          this.lastVoiceAt = Date.now();
           if (!this.isSpeaking) {
             this.isSpeaking = true;
             if (this.onSpeech) this.onSpeech();
@@ -368,5 +471,6 @@ export class AudioRecorder {
     }
     this.isSpeaking = false;
     this.silenceMs = 0;
+    this.smoothedRms = 0;
   }
 }
