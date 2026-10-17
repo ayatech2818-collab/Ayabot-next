@@ -3,6 +3,8 @@
  * Utilities for capturing, downsampling, playing, and converting raw PCM audio for Gemini Live.
  */
 
+import { blockRms, recordVadBlock, recordVadEvent } from './vadDebug'; // TEMP-DEBUG
+
 // Converts a base64 string to a Uint8Array
 export function base64ToUint8Array(base64: string): Uint8Array {
   const binaryString = atob(base64);
@@ -123,6 +125,12 @@ export class AudioQueue {
   /** True when audio is currently being played through speakers */
   get isPlaying(): boolean {
     return this.activeSources.length > 0;
+  }
+
+  /** Milliseconds of already-queued audio still left to play. */
+  get remainingMs(): number {
+    if (!this.audioContext || this.activeSources.length === 0) return 0;
+    return Math.max(0, this.nextPlayTime - this.audioContext.currentTime) * 1000;
   }
 
   constructor() {
@@ -308,7 +316,37 @@ export class AudioRecorder {
   private smoothedRms: number = 0;
   private readonly RMS_ALPHA = 0.1; // Smoothing factor for VAD RMS
   private readonly SILENCE_THRESHOLD = 1000; // Increased threshold for stability
-  private readonly REQUIRED_SILENCE_MS = 1200; // Slightly longer wait to ensure turn completion
+  // Quiet needed to end speech, counted once the recent-loudness window below has drained
+  // (up to ~0.25 s), so speech still ends about as quickly as before.
+  private readonly REQUIRED_SILENCE_MS = 1000;
+  // Voice is judged by how much of the last 250 ms was loud, not by single blocks: clicks, key
+  // presses and bumps are too short to start "speaking" or keep it alive, while the short gaps
+  // between syllables don't reset the count the way a strict unbroken run would.
+  private readonly LOUD_WINDOW_MS = 250;
+  private readonly SPEECH_START_MS = 90;
+  private readonly SPEECH_KEEPALIVE_MS = 80;
+  /** Duration and loudness of each block in the last LOUD_WINDOW_MS. */
+  private loudHistory: { ms: number; loud: boolean }[] = [];
+  private historyMs: number = 0;
+  private loudMs: number = 0;
+
+  private resetLoudHistory() {
+    this.loudHistory = [];
+    this.historyMs = 0;
+    this.loudMs = 0;
+  }
+
+  private trackLoudness(rms: number, blockMs: number) {
+    const loud = rms > this.SILENCE_THRESHOLD;
+    this.loudHistory.push({ ms: blockMs, loud });
+    this.historyMs += blockMs;
+    if (loud) this.loudMs += blockMs;
+    while (this.loudHistory.length > 1 && this.historyMs - this.loudHistory[0].ms >= this.LOUD_WINDOW_MS) {
+      const old = this.loudHistory.shift()!;
+      this.historyMs -= old.ms;
+      if (old.loud) this.loudMs -= old.ms;
+    }
+  }
 
   get speaking(): boolean {
     return this.isSpeaking;
@@ -331,6 +369,7 @@ export class AudioRecorder {
     if (muted) {
       this.isSpeaking = false;
       this.silenceMs = 0;
+      this.resetLoudHistory();
       this.smoothedRms = 0;
       this.audioBuffer = [];
       this.audioBufferLength = 0;
@@ -392,8 +431,10 @@ export class AudioRecorder {
 
         // Skip all VAD and audio sending while muted or while bot is speaking (echo suppression)
         if (this.suppressVAD || this.isMuted) {
+          recordVadBlock(blockRms(int16Array), 0, false, this.isMuted ? 'muted' : 'suppressed', (int16Array.length / 16000) * 1000); // TEMP-DEBUG
           this.isSpeaking = false;
           this.silenceMs = 0;
+          this.resetLoudHistory();
           this.smoothedRms = 0;
           return;
         }
@@ -410,22 +451,29 @@ export class AudioRecorder {
 
         const chunkDurationMs = (int16Array.length / 16000) * 1000;
 
-        if (this.smoothedRms > this.SILENCE_THRESHOLD) {
+        this.trackLoudness(rms, chunkDurationMs);
+
+        if (!this.isSpeaking && this.loudMs >= this.SPEECH_START_MS) {
           this.lastVoiceAt = Date.now();
-          if (!this.isSpeaking) {
-            this.isSpeaking = true;
-            if (this.onSpeech) this.onSpeech();
-          }
+          this.isSpeaking = true;
+          this.silenceMs = 0;
+          recordVadEvent('start', this.smoothedRms); // TEMP-DEBUG
+          if (this.onSpeech) this.onSpeech();
+        } else if (this.loudMs >= this.SPEECH_KEEPALIVE_MS) {
+          this.lastVoiceAt = Date.now();
           this.silenceMs = 0;
         } else {
+          // Quiet, or a burst too short to be voice: count towards the end of speech.
           if (this.isSpeaking) {
             this.silenceMs += chunkDurationMs;
             if (this.silenceMs > this.REQUIRED_SILENCE_MS) {
               this.isSpeaking = false;
+              recordVadEvent('end', this.smoothedRms); // TEMP-DEBUG
               if (this.onSilence) this.onSilence();
             }
           }
         }
+        recordVadBlock(rms, this.smoothedRms, this.isSpeaking, 'live', chunkDurationMs); // TEMP-DEBUG
 
         // Buffer audio to send larger chunks (reduces websocket latency overhead)
         this.audioBuffer.push(int16Array);
@@ -471,6 +519,7 @@ export class AudioRecorder {
     }
     this.isSpeaking = false;
     this.silenceMs = 0;
+    this.resetLoudHistory();
     this.smoothedRms = 0;
   }
 }

@@ -42,6 +42,7 @@ export default function VoiceChat() {
     isSpeaking,
     isUserSpeaking,
     isMuted,
+    isEnding,
     volume,
     transcript,
     events,
@@ -52,6 +53,7 @@ export default function VoiceChat() {
     getInputLevel,
     connect,
     disconnect,
+    endConversation,
     askTopic,
     toggleMute,
     setVolume,
@@ -59,7 +61,7 @@ export default function VoiceChat() {
     dismissError,
   } = useGeminiLive();
 
-  const phase = getPhase({ status, isSpeaking, isUserSpeaking, isMuted });
+  const phase = getPhase({ status, isSpeaking, isUserSpeaking, isMuted, isEnding });
 
   // Desktop-only: hide Live activity so Aya's stage fills the width.
   const isDesktop = useSyncExternalStore(subscribeDesktop, getIsDesktop, getServerDesktop);
@@ -115,12 +117,15 @@ export default function VoiceChat() {
   useAudioLevels(rootRef, getPlaybackLevel, getInputLevel, status === "connected");
 
   const handleToggleCall = useCallback(() => {
-    if (status === "connected" || status === "connecting") {
+    if (status === "connected") {
+      // Aya says goodbye first; pressing again while she does closes right away.
+      endConversation();
+    } else if (status === "connecting") {
       disconnect();
     } else {
       void connect();
     }
-  }, [status, connect, disconnect]);
+  }, [status, connect, disconnect, endConversation]);
 
   const handleRetry = useCallback(() => {
     void connect();
@@ -201,6 +206,7 @@ export default function VoiceChat() {
             <ControlDock
               status={status}
               isMuted={isMuted}
+              isEnding={isEnding}
               volume={volume}
               hasHistory={transcript.length > 0 || events.length > 0}
               onToggleCall={handleToggleCall}

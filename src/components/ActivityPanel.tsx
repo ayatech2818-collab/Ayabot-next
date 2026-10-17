@@ -27,6 +27,7 @@ const EVENT_TONE: Record<ActivityKind, string> = {
   prompt: "user",
   muted: "danger",
   unmuted: "success",
+  ending: "accent",
   disconnected: "muted",
   error: "danger",
 };

@@ -154,7 +154,7 @@ export default function Stage({
           <RobotScene
             getSpeechFeatures={getSpeechFeatures}
             theme={theme}
-            active={phase === "listening" || phase === "user-speaking" || phase === "aya-speaking" || phase === "muted"}
+            active={phase === "listening" || phase === "user-speaking" || phase === "aya-speaking" || phase === "muted" || phase === "ending"}
             onReady={handleModelReady}
             onProgress={setLoadProgress}
           />

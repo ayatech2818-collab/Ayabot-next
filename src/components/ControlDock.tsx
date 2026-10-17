@@ -8,6 +8,8 @@ import styles from "./ControlDock.module.css";
 type ControlDockProps = {
   status: ConnectionStatus;
   isMuted: boolean;
+  /** Aya is saying goodbye; pressing the call button again closes right away. */
+  isEnding: boolean;
   volume: number;
   hasHistory: boolean;
   onToggleCall: () => void;
@@ -19,6 +21,7 @@ type ControlDockProps = {
 export default function ControlDock({
   status,
   isMuted,
+  isEnding,
   volume,
   hasHistory,
   onToggleCall,
@@ -62,7 +65,7 @@ export default function ControlDock({
         type="button"
         className={`${styles.iconButton} ${isMuted ? styles.danger : ""}`}
         onClick={onToggleMute}
-        disabled={!isLive}
+        disabled={!isLive || isEnding}
         aria-pressed={isMuted}
         aria-label={isMuted ? "Unmute microphone" : "Mute microphone"}
         title={isLive ? (isMuted ? "Unmute microphone" : "Mute microphone") : "Start a conversation to use the microphone"}
@@ -74,9 +77,15 @@ export default function ControlDock({
         type="button"
         className={`${styles.callButton} ${isLive || isConnecting ? styles.callEnd : styles.callStart}`}
         onClick={onToggleCall}
-        aria-label={isLive ? "End conversation" : isConnecting ? "Cancel connecting" : "Start conversation"}
+        aria-label={isEnding ? "End now" : isLive ? "End conversation" : isConnecting ? "Cancel connecting" : "Start conversation"}
+        title={isEnding ? "Aya is saying goodbye. Press to end now" : undefined}
       >
-        {isConnecting ? (
+        {isEnding ? (
+          <>
+            <span className={styles.spinner} aria-hidden="true" />
+            <span>Ending…</span>
+          </>
+        ) : isConnecting ? (
           <>
             <span className={styles.spinner} aria-hidden="true" />
             <span>Connecting…</span>

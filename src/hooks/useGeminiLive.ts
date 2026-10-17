@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useSyncExternalStore } from 'react';
 import { AudioQueue, AudioRecorder, type SpeechFeatures } from '../utils/audioProcessing';
-import { AYADI_SYSTEM_PROMPT } from '../constants/prompts';
+import { AYADI_SYSTEM_PROMPT, FAREWELL_PROMPT, GREETING_PROMPT } from '../constants/prompts';
 
 const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
 const MODEL_NAME = "gemini-2.5-flash-native-audio-preview-09-2025";
@@ -11,6 +11,10 @@ const MAX_EVENTS = 80;
 const MAX_TRANSCRIPT = 200;
 const VOLUME_STORAGE_KEY = 'ayabot-volume';
 const SILENT_SPEECH: SpeechFeatures = { level: 0, low: 0, mid: 0, high: 0, centroid: 0 };
+// Longest wait for Aya's goodbye before the call closes anyway.
+const FAREWELL_TIMEOUT_MS = 10000;
+// Pause after the goodbye finishes playing before hanging up.
+const FAREWELL_TAIL_MS = 500;
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
@@ -36,6 +40,7 @@ export type ActivityKind =
   | 'prompt'
   | 'muted'
   | 'unmuted'
+  | 'ending'
   | 'disconnected'
   | 'error';
 
@@ -106,6 +111,7 @@ export function useGeminiLive() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
   const volume = useSyncExternalStore(subscribeVolume, getVolumeSnapshot, () => 1);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
@@ -124,6 +130,10 @@ export function useGeminiLive() {
   const modelTurnActiveRef = useRef(false);
   const lastTurnEndAtRef = useRef(0);
   const promptSentAtRef = useRef(0);
+  // Goodbye in progress: whether its audio has started, and the timer that closes the call.
+  const endingRef = useRef(false);
+  const farewellAudioRef = useRef(false);
+  const endTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateStatus = useCallback((next: ConnectionStatus) => {
     statusRef.current = next;
@@ -173,6 +183,13 @@ export function useGeminiLive() {
   }, []);
 
   const teardown = useCallback(() => {
+    if (endTimerRef.current) {
+      clearTimeout(endTimerRef.current);
+      endTimerRef.current = null;
+    }
+    endingRef.current = false;
+    farewellAudioRef.current = false;
+    setIsEnding(false);
     if (wsRef.current) {
       wsRef.current.onclose = null;
       wsRef.current.onerror = null;
@@ -216,13 +233,22 @@ export function useGeminiLive() {
     if (wasActive) logEvent('disconnected', 'Conversation ended');
   }, [teardown, finalizeTranscript, updateStatus, logEvent]);
 
-  const sendPrompt = useCallback((ws: WebSocket, text: string) => {
+  /** Close the call once the goodbye audio already queued has finished playing. */
+  const hangUpAfterPlayback = useCallback(() => {
+    if (endTimerRef.current) clearTimeout(endTimerRef.current);
+    const remaining = audioQueueRef.current?.remainingMs ?? 0;
+    endTimerRef.current = setTimeout(disconnect, remaining + FAREWELL_TAIL_MS);
+  }, [disconnect]);
+
+  /** Send a text turn. Hidden turns (greeting, goodbye) stay out of the transcript and timeline. */
+  const sendPrompt = useCallback((ws: WebSocket, text: string, hidden = false) => {
     ws.send(JSON.stringify({
       clientContent: {
         turns: [{ role: 'user', parts: [{ text }] }],
         turnComplete: true,
       },
     }));
+    if (hidden) return;
     promptSentAtRef.current = Date.now();
     setTranscript(prev => [
       ...prev,
@@ -358,7 +384,11 @@ export function useGeminiLive() {
             setupCompleteRef.current = true;
             const pending = pendingPromptRef.current;
             pendingPromptRef.current = null;
-            if (pending && ws.readyState === WebSocket.OPEN) sendPrompt(ws, pending);
+            // Answer the question the call was started with, or have Aya open with a greeting.
+            if (ws.readyState === WebSocket.OPEN) {
+              if (pending) sendPrompt(ws, pending);
+              else sendPrompt(ws, GREETING_PROMPT, true);
+            }
           }
 
           if (response.serverContent) {
@@ -388,6 +418,7 @@ export function useGeminiLive() {
                 logEvent('aya-speaking', 'Aya is replying');
               }
               setIsSpeaking(true);
+              if (endingRef.current) farewellAudioRef.current = true;
               // Suppress mic VAD while bot audio plays (echo suppression)
               if (audioRecorderRef.current) {
                 audioRecorderRef.current.suppressVAD = true;
@@ -403,6 +434,8 @@ export function useGeminiLive() {
 
             if (serverContent.interrupted) {
               audioQueueRef.current?.stop();
+              // Audio before this point belonged to the reply the goodbye cut off.
+              farewellAudioRef.current = false;
               if (modelTurnActiveRef.current) {
                 modelTurnActiveRef.current = false;
                 lastTurnEndAtRef.current = Date.now();
@@ -417,6 +450,8 @@ export function useGeminiLive() {
               lastTurnEndAtRef.current = Date.now();
               finalizeTranscript();
               logEvent('turn-complete', 'Aya finished replying');
+              // The goodbye has been fully received: hang up when it finishes playing.
+              if (endingRef.current && farewellAudioRef.current) hangUpAfterPlayback();
               setTimeout(() => {
                 setIsSpeaking(false);
                 if (audioRecorderRef.current) {
@@ -444,10 +479,41 @@ export function useGeminiLive() {
       console.error('Failed to start:', e);
       fail('Could not start the conversation. Check your connection and try again.');
     }
-  }, [fail, updateStatus, logEvent, appendTranscript, finalizeTranscript, sendPrompt]);
+  }, [fail, updateStatus, logEvent, appendTranscript, finalizeTranscript, sendPrompt, hangUpAfterPlayback]);
+
+  /**
+   * End the conversation with a spoken goodbye. Pressing again while Aya says goodbye, or ending
+   * before the session is ready, closes the call right away.
+   */
+  const endConversation = useCallback(() => {
+    const ws = wsRef.current;
+    if (
+      endingRef.current ||
+      statusRef.current !== 'connected' ||
+      !setupCompleteRef.current ||
+      !ws ||
+      ws.readyState !== WebSocket.OPEN
+    ) {
+      disconnect();
+      return;
+    }
+    endingRef.current = true;
+    farewellAudioRef.current = false;
+    setIsEnding(true);
+    pendingPromptRef.current = null;
+    // Stop listening so the visitor or the room can't cut the goodbye short.
+    audioRecorderRef.current?.setMuted(true);
+    setIsUserSpeaking(false);
+    audioQueueRef.current?.stop();
+    logEvent('ending', 'Aya is saying goodbye');
+    sendPrompt(ws, FAREWELL_PROMPT, true);
+    // Close anyway if the goodbye never arrives.
+    endTimerRef.current = setTimeout(hangUpAfterPlayback, FAREWELL_TIMEOUT_MS);
+  }, [disconnect, logEvent, sendPrompt, hangUpAfterPlayback]);
 
   /** Ask Aya something by text. Starts a conversation first when needed. */
   const askTopic = useCallback((text: string) => {
+    if (endingRef.current) return;
     const ws = wsRef.current;
     if (statusRef.current === 'connected' && setupCompleteRef.current && ws?.readyState === WebSocket.OPEN) {
       // Stop any reply in progress so the new topic is answered right away.
@@ -463,6 +529,7 @@ export function useGeminiLive() {
   }, [connect, sendPrompt]);
 
   const toggleMute = useCallback(() => {
+    if (endingRef.current) return;
     const next = !mutedRef.current;
     mutedRef.current = next;
     setIsMuted(next);
@@ -505,6 +572,7 @@ export function useGeminiLive() {
     isSpeaking,
     isUserSpeaking,
     isMuted,
+    isEnding,
     volume,
     transcript,
     events,
@@ -515,6 +583,7 @@ export function useGeminiLive() {
     getInputLevel,
     connect,
     disconnect,
+    endConversation,
     askTopic,
     toggleMute,
     setVolume,

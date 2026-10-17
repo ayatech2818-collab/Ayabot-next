@@ -18,7 +18,8 @@
 .stage[data-phase="connecting"] { --phase-color: var(--warning); }
 .stage[data-phase="listening"] { --phase-color: var(--success); }
 .stage[data-phase="user-speaking"] { --phase-color: var(--user); }
-.stage[data-phase="aya-speaking"] { --phase-color: var(--accent); }
+.stage[data-phase="aya-speaking"],
+.stage[data-phase="ending"] { --phase-color: var(--accent); }
 .stage[data-phase="muted"] { --phase-color: var(--danger); }
 .stage[data-phase="error"] { --phase-color: var(--danger); }
 
@@ -950,5 +951,77 @@
   .quickDock .quickPanel .topic,
   .quickChevron {
     transition: none !important;
+  }
+}
+
+/* ===== Phones: a smaller, calmer Aya =====
+   The camera's vertical field of view is fixed, so Aya's size follows the canvas height.
+   On phones the canvas uses the lower ~76% of the robot area (feet stay by the status chip),
+   which makes her about a quarter smaller and leaves breathing room under the heading. The
+   halo and status ring move down to stay centred on her. Desktop is unaffected. */
+@media (max-width: 560px) {
+  .canvas {
+    top: auto;
+    bottom: 0;
+    height: 76cqh;
+    width: min(100cqw, 114cqh);
+  }
+
+  .halo,
+  .ring,
+  .ringPulse {
+    top: 60%;
+  }
+
+  .halo {
+    width: min(80cqw, 74cqh);
+  }
+
+  .ring,
+  .ringPulse {
+    width: min(60cqw, 56cqh);
+  }
+
+  .quickLauncher {
+    height: 40px;
+    padding: 0 9px;
+  }
+
+  .quickLauncher .quickBadge {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+  }
+
+  .quickChevron {
+    width: 14px;
+    height: 14px;
+  }
+
+  .topActions {
+    top: 8px;
+    right: 8px;
+  }
+
+  .topActions > * {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
+  .topActions svg {
+    width: 15px;
+    height: 15px;
+  }
+}
+
+@media (max-width: 360px) {
+  .canvas {
+    height: 72cqh;
+  }
+
+  .quickLauncher {
+    height: 36px;
+    padding: 0 7px;
   }
 }

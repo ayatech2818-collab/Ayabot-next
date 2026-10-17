@@ -8,6 +8,7 @@ export type Phase =
   | "user-speaking"
   | "aya-speaking"
   | "muted"
+  | "ending"
   | "error";
 
 export function getPhase(input: {
@@ -15,10 +16,12 @@ export function getPhase(input: {
   isSpeaking: boolean;
   isUserSpeaking: boolean;
   isMuted: boolean;
+  isEnding: boolean;
 }): Phase {
   if (input.status === "error") return "error";
   if (input.status === "connecting") return "connecting";
   if (input.status !== "connected") return "idle";
+  if (input.isEnding) return "ending";
   if (input.isSpeaking) return "aya-speaking";
   if (input.isMuted) return "muted";
   if (input.isUserSpeaking) return "user-speaking";
@@ -32,5 +35,6 @@ export const PHASE_COPY: Record<Phase, { label: string; hint: string }> = {
   "user-speaking": { label: "Hearing you", hint: "Aya replies when you pause" },
   "aya-speaking": { label: "Aya is speaking", hint: "Speak any time to interrupt" },
   muted: { label: "Mic muted", hint: "Unmute to keep talking" },
+  ending: { label: "Saying goodbye", hint: "Press End again to close now" },
   error: { label: "Not connected", hint: "See the message below" },
 };
