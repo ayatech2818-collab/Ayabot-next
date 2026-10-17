@@ -4,13 +4,14 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useGeminiLive } from "../hooks/useGeminiLive";
 import { useAudioLevels } from "../hooks/useAudioLevels";
 import { useFullscreen } from "../hooks/useFullscreen";
+import { useScene } from "../hooks/useScene";
 import { useTheme } from "../hooks/useTheme";
 import ActivityPanel from "./ActivityPanel";
 import Backdrop from "./Backdrop";
 import ControlDock from "./ControlDock";
 import Stage from "./Stage";
 import ThemeSwitcher from "./ThemeSwitcher";
-import { MaximizeIcon, MinimizeIcon, PanelRightIcon } from "./icons";
+import { MaximizeIcon, MinimizeIcon, PanelRightIcon, SceneIcon } from "./icons";
 import { getPhase } from "./phase";
 import styles from "./VoiceChat.module.css";
 
@@ -34,6 +35,7 @@ const getServerDesktop = () => true;
 export default function VoiceChat() {
   const rootRef = useRef<HTMLDivElement>(null);
   const { resolved: theme } = useTheme();
+  const { sceneOn, setSceneOn } = useScene();
   const {
     status,
     error,
@@ -63,6 +65,8 @@ export default function VoiceChat() {
   const isDesktop = useSyncExternalStore(subscribeDesktop, getIsDesktop, getServerDesktop);
   const [panelOpen, setPanelOpen] = useState(true);
   const [seenCount, setSeenCount] = useState(0);
+  // Increments on every full-screen change so the stage can cover the jump in size.
+  const [viewEpoch, setViewEpoch] = useState(0);
   const unseen = panelOpen ? 0 : Math.max(0, transcript.length - seenCount);
   const { isFullscreen, supported: fullscreenSupported, toggle: toggleFullscreen } = useFullscreen();
   // Panel state to restore when leaving fullscreen (null = fullscreen wasn't entered from here).
@@ -89,6 +93,7 @@ export default function VoiceChat() {
     // React to the browser's event rather than the click: fullscreen can be refused, and Esc
     // or the browser's own controls can end it too.
     const onChange = () => {
+      setViewEpoch(epoch => epoch + 1);
       if (document.fullscreenElement) {
         if (!enteringFullscreenRef.current) return;
         enteringFullscreenRef.current = false;
@@ -122,7 +127,7 @@ export default function VoiceChat() {
   }, [connect]);
 
   return (
-    <div ref={rootRef} className={styles.app}>
+    <div ref={rootRef} className={styles.app} data-panel={panelOpen ? "open" : "closed"}>
       <Backdrop />
 
       <header className={styles.topbar}>
@@ -153,6 +158,16 @@ export default function VoiceChat() {
               <span className={styles.unseen} aria-label={`${unseen} new`}>{unseen > 99 ? "99+" : unseen}</span>
             )}
           </button>
+          <button
+            type="button"
+            className={`${styles.panelToggle} ${styles.sceneToggle}`}
+            onClick={() => setSceneOn(!sceneOn)}
+            aria-pressed={sceneOn}
+            title={sceneOn ? "Turn off background scene" : "Turn on background scene"}
+          >
+            <SceneIcon size={16} strokeWidth={1.9} />
+            <span className={styles.panelToggleLabel}>{sceneOn ? "Scene on" : "Scene off"}</span>
+          </button>
           <ThemeSwitcher />
         </div>
       </header>
@@ -167,6 +182,7 @@ export default function VoiceChat() {
           onTopic={askTopic}
           onRetry={handleRetry}
           onDismissError={dismissError}
+          viewEpoch={viewEpoch}
           topActions={
             fullscreenSupported ? (
               <button

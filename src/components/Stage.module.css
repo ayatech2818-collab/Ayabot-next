@@ -22,6 +22,21 @@
 .stage[data-phase="muted"] { --phase-color: var(--danger); }
 .stage[data-phase="error"] { --phase-color: var(--danger); }
 
+/* ===== Background scene: the card dissolves into the scene ===== */
+.stage {
+  transition: background 0.5s ease, border-color 0.5s ease, box-shadow 0.5s ease;
+}
+
+:global(html[data-scene="on"]) .stage {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:global(html[data-scene="on"]) .status {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
 /* ===== Corner actions (full screen) ===== */
 .topActions {
   position: absolute;
@@ -129,12 +144,80 @@
 }
 
 .canvas {
+  /* Sized from the stage height and centred with CSS, so widening or narrowing the stage
+     (hiding Live activity) never resizes the 3D scene: Aya just glides with the layout. */
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: min(100cqw, 150cqh);
+  translate: -50% 0;
   z-index: 1;
   cursor: pointer;
   border-radius: var(--radius-lg);
   -webkit-tap-highlight-color: transparent;
+  transition:
+    opacity 0.8s ease,
+    scale 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* If the box changes size (full screen), stretch the last frame to fit until the scene
+   re-renders at the new size, instead of leaving it pinned to the top-left corner. */
+.canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.canvas[data-ready="false"] {
+  opacity: 0;
+  scale: 0.94;
+}
+
+/* ===== Loading + view-change overlays ===== */
+.loaderLayer,
+.viewVeil {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.loaderLayer {
+  transition:
+    opacity 0.6s ease,
+    scale 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+.loaderLayer[data-hidden="true"] {
+  opacity: 0;
+  scale: 1.06;
+  visibility: hidden;
+  transition:
+    opacity 0.6s ease,
+    scale 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0.6s;
+}
+
+.viewVeil {
+  border-radius: var(--radius-lg);
+  background: radial-gradient(ellipse at 50% 45%, color-mix(in srgb, var(--surface-strong) 70%, transparent), transparent 75%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: veil 0.75s ease forwards;
+}
+
+@keyframes veil {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
 }
 
 .canvas:focus-visible {
@@ -142,30 +225,6 @@
   outline-offset: -6px;
 }
 
-.loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  height: 100%;
-}
-
-.loadingSpinner {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 3px solid var(--accent-soft);
-  border-top-color: var(--accent);
-  animation: spin 0.9s linear infinite;
-}
-
-.loadingText {
-  font-family: var(--font-mono), monospace;
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
-}
 
 /* ===== Status chip ===== */
 .status {
@@ -707,5 +766,189 @@
   .stage .ringPulse,
   .stage .statusDot::after {
     animation: none !important;
+  }
+}
+
+/* ===== Collapsible quick questions =====
+   A launcher pill sits at the left of the controls row; the topics open upward from it.
+   Container query units/queries use the bottom row's width. */
+.bottom {
+  flex-direction: row;
+  justify-content: center;
+  align-items: flex-end;
+  container-type: inline-size;
+}
+
+.quickDock {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 3;
+}
+
+.quickLauncher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 14px 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--glass-bg);
+  color: var(--glass-text);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  cursor: pointer;
+  isolation: isolate;
+  transition: transform 0.2s ease, box-shadow 0.25s ease;
+}
+
+.quickLauncher::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--glass-border);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.quickLauncher:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--glass-highlight), 0 14px 30px -14px var(--cta-glow);
+}
+
+.quickLauncher:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.quickLauncher .quickBadge {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.quickChevron {
+  color: var(--glass-muted);
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quickLauncher[aria-expanded="true"] .quickChevron {
+  transform: rotate(180deg);
+}
+
+.quickLauncher[aria-expanded="true"] {
+  box-shadow: var(--glass-highlight), 0 0 0 2px color-mix(in srgb, var(--glass-muted) 45%, transparent), var(--glass-shadow);
+}
+
+/* The topics card floats above the launcher and grows out of its corner. */
+.quickDock .quickPanel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 12px);
+  width: min(340px, calc(100cqw - 8px));
+  transform-origin: bottom left;
+  transition:
+    opacity 0.28s ease,
+    transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+.quickDock .quickPanel[data-open="false"] {
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.25s ease,
+    visibility 0s linear 0.25s;
+}
+
+.quickDock .quickPanel .topics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.quickDock .quickPanel .topic {
+  justify-content: flex-start;
+  transition:
+    opacity 0.3s ease calc(var(--i, 0) * 45ms + 60ms),
+    translate 0.4s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--i, 0) * 45ms + 60ms),
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.quickDock .quickPanel[data-open="false"] .topic {
+  opacity: 0;
+  translate: 0 8px;
+  transition: none;
+}
+
+/* Narrow stage: keep just the sparkle so it never collides with the centred controls. */
+@container (max-width: 720px) {
+  .quickLauncherLabel {
+    display: none;
+  }
+
+  .quickLauncher {
+    padding: 0 12px;
+    gap: 6px;
+  }
+}
+
+/* Phones: launcher sits beside the controls in the row instead of floating at the edge. */
+@media (max-width: 560px) {
+  .bottom {
+    gap: 8px;
+  }
+
+  .quickDock {
+    position: relative;
+    left: auto;
+    bottom: auto;
+    flex: none;
+  }
+
+  .quickLauncher {
+    height: 46px;
+    padding: 0 10px;
+    gap: 4px;
+  }
+
+  .quickLauncher .quickBadge {
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+  }
+
+  .quickDock .quickPanel {
+    width: min(330px, calc(100vw - 40px));
+    bottom: calc(100% + 10px);
+  }
+
+  .quickDock .quickPanel .topics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quickDock .quickPanel,
+  .quickDock .quickPanel .topic,
+  .quickChevron {
+    transition: none !important;
   }
 }

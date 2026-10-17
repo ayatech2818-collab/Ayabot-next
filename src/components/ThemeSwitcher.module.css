@@ -67,3 +67,8 @@
     height: 12px;
   }
 }
+
+:global(html[data-scene="on"]) .switcher {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}

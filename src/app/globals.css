@@ -120,6 +120,30 @@
   --shadow-lg: 0 24px 56px -28px rgba(15, 40, 70, 0.3);
 }
 
+/* ===== Glass-city scene =====
+   With the background scene on, surfaces turn into translucent glass over the image and the
+   stage card dissolves so Aya stands in the scene itself. Toggled via <html data-scene>. */
+html[data-scene="on"][data-theme="light"] {
+  --surface: rgba(255, 255, 255, 0.7);
+  --surface-strong: rgba(255, 255, 255, 0.84);
+  --surface-muted: rgba(255, 255, 255, 0.46);
+  --border: rgba(255, 255, 255, 0.78);
+  --stage-bg: transparent;
+  --halo: rgba(34, 211, 238, 0.1);
+  --track: rgba(30, 64, 120, 0.12);
+  --shadow-lg: 0 26px 60px -30px rgba(30, 64, 120, 0.42);
+  --shadow-md: 0 14px 30px -16px rgba(30, 64, 120, 0.35);
+}
+
+html[data-scene="on"][data-theme="dark"] {
+  --surface: rgba(8, 16, 34, 0.56);
+  --surface-strong: rgba(10, 20, 40, 0.8);
+  --surface-muted: rgba(148, 197, 255, 0.08);
+  --border: rgba(148, 197, 255, 0.2);
+  --stage-bg: transparent;
+  --halo: rgba(34, 211, 238, 0.12);
+}
+
 /* ===== Base ===== */
 *,
 *::before,

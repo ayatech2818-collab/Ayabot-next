@@ -3,7 +3,7 @@
 
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { Environment, useGLTF } from '@react-three/drei';
+import { Environment, useGLTF, useProgress } from '@react-three/drei';
 import * as THREE from 'three';
 import type { SpeechFeatures } from '../utils/audioProcessing';
 import { createMouth, type MouthDriver } from './robotMouth';
@@ -20,9 +20,13 @@ type RobotSceneProps = {
   theme: SceneTheme;
   /** True while a conversation is connected (Aya greets with a wave when it starts). */
   active: boolean;
+  /** Called once the robot model is in the scene and ready to show. */
+  onReady?: () => void;
+  /** Loading progress of the model and environment, 0..100. */
+  onProgress?: (progress: number) => void;
 };
 
-type RobotModelProps = Pick<RobotSceneProps, 'getSpeechFeatures' | 'active'>;
+type RobotModelProps = Pick<RobotSceneProps, 'getSpeechFeatures' | 'active' | 'onReady'>;
 
 // Arm node local axes: X runs across the body, Y front-to-back (+Y is behind), Z up (the arm
 // hangs along -Z from the shoulder pivot).
@@ -98,7 +102,7 @@ const SCENE_PALETTE = {
 
 type Palette = (typeof SCENE_PALETTE)[SceneTheme];
 
-function RobotModel({ getSpeechFeatures, active }: RobotModelProps) {
+function RobotModel({ getSpeechFeatures, active, onReady }: RobotModelProps) {
   const { scene } = useGLTF('/models/ai_robot.glb');
 
   const mouthDriverRef = useRef<MouthDriver | null>(null);
@@ -199,6 +203,11 @@ function RobotModel({ getSpeechFeatures, active }: RobotModelProps) {
     animatorRef.current ??= new RobotAnimator();
   }, [mouthDriver, eyeBlink, headGroup, bodyGroup, leftArm, rightArm]);
 
+  // This component only mounts once the GLB has loaded (it suspends until then).
+  useEffect(() => {
+    onReady?.();
+  }, [onReady]);
+
   useFrame((state, delta) => {
     // Lip-sync first so the head nod below can follow the same loudness.
     const loudness = mouthDriverRef.current?.update(getSpeechFeatures(), delta) ?? 0;
@@ -262,7 +271,7 @@ function RobotModel({ getSpeechFeatures, active }: RobotModelProps) {
   );
 }
 
-function SceneContent({ getSpeechFeatures, theme, active }: RobotSceneProps) {
+function SceneContent({ getSpeechFeatures, theme, active, onReady }: RobotSceneProps) {
   const palette = SCENE_PALETTE[theme];
   return (
     <>
@@ -293,7 +302,7 @@ function SceneContent({ getSpeechFeatures, theme, active }: RobotSceneProps) {
       />
 
       <Suspense fallback={null}>
-        <RobotModel getSpeechFeatures={getSpeechFeatures} active={active} />
+        <RobotModel getSpeechFeatures={getSpeechFeatures} active={active} onReady={onReady} />
         <Environment preset="city" />
       </Suspense>
 
@@ -341,7 +350,16 @@ function OrbitalRings({ palette }: { palette: Palette }) {
   ))}</group>;
 }
 
-export default function RobotScene({ getSpeechFeatures, theme, active }: RobotSceneProps) {
+/** Forwards drei's global loading progress to the page's loader. */
+function ProgressReporter({ onProgress }: { onProgress?: (progress: number) => void }) {
+  const progress = useProgress(state => state.progress);
+  useEffect(() => {
+    onProgress?.(progress);
+  }, [progress, onProgress]);
+  return null;
+}
+
+export default function RobotScene({ getSpeechFeatures, theme, active, onReady, onProgress }: RobotSceneProps) {
   useEffect(() => {
     const finePointer = window.matchMedia('(hover: hover) and (pointer: fine)');
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -384,12 +402,15 @@ export default function RobotScene({ getSpeechFeatures, theme, active }: RobotSc
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <Canvas
-        camera={{ position: [0, 0.3, 6], fov: 34 }}
+        // Framed so the antenna ball keeps headroom at the top of the float/nod and the platform
+        // base stays in view (measured by projecting the scene's bounds).
+        camera={{ position: [0, 0, 6], fov: 38.5 }}
         dpr={[1, 1.25]}
         gl={{ antialias: true, alpha: true }}
       >
-        <SceneContent getSpeechFeatures={getSpeechFeatures} theme={theme} active={active} />
+        <SceneContent getSpeechFeatures={getSpeechFeatures} theme={theme} active={active} onReady={onReady} />
       </Canvas>
+      <ProgressReporter onProgress={onProgress} />
     </div>
   );
 }

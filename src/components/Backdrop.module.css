@@ -75,3 +75,90 @@
     opacity: 0.6;
   }
 }
+
+/* ===== Glass-city scene (html[data-scene="on"]) ===== */
+.scene,
+.sceneTint {
+  position: absolute;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.7s ease,
+    visibility 0s linear 0.7s;
+}
+
+.scene {
+  /* Centre the image's glowing portal (its horizontal middle) behind Aya. The stage centre
+     depends on whether Live activity is open, so --cx mirrors the page grid. */
+  --pad: clamp(16px, 2.4vw, 28px);
+  --gap: clamp(14px, 1.6vw, 22px);
+  --panel: clamp(320px, 27vw, 400px);
+  --cx: calc(var(--pad) + (100vw - 2 * var(--pad) - var(--gap) - var(--panel)) / 2);
+  bottom: 0;
+  left: var(--cx);
+  /* Wide enough to cover the viewport from either side of the centre, never shorter than it. */
+  width: max(100vh * 1.915, 2 * max(var(--cx), 100vw - var(--cx)));
+  aspect-ratio: 1735 / 906;
+  translate: -50% 0;
+  background: url("/scene/glass-city.webp") center bottom / cover no-repeat;
+  transition:
+    opacity 0.7s ease,
+    visibility 0s linear 0.7s,
+    left 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.5s ease;
+}
+
+:global([data-panel="closed"]) .scene {
+  --cx: 50vw;
+}
+
+/* Soft wash for readability: brightens behind the heading in light mode, deepens to night in dark. */
+.sceneTint {
+  inset: 0;
+  background:
+    radial-gradient(ellipse 55% 45% at 12% 18%, rgba(255, 255, 255, 0.55), transparent 70%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.15), transparent 30%);
+}
+
+:global(html[data-scene="on"]) .scene,
+:global(html[data-scene="on"]) .sceneTint {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 0.7s ease,
+    visibility 0s linear 0s,
+    left 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.5s ease;
+}
+
+:global(html[data-scene="on"][data-theme="dark"]) .scene {
+  filter: brightness(0.42) saturate(1.25) contrast(1.08) hue-rotate(8deg);
+}
+
+:global(html[data-scene="on"][data-theme="dark"]) .sceneTint {
+  background:
+    radial-gradient(ellipse 60% 50% at 12% 18%, rgba(5, 11, 24, 0.55), transparent 70%),
+    linear-gradient(180deg, rgba(5, 11, 24, 0.55) 0%, rgba(5, 11, 24, 0.15) 45%, rgba(5, 11, 24, 0.5) 100%);
+}
+
+/* The decorative glows, grid and stars belong to the plain backdrop only. */
+:global(html[data-scene="on"]) .glowA,
+:global(html[data-scene="on"]) .glowB,
+:global(html[data-scene="on"]) .grid,
+:global(html[data-scene="on"]) .stars {
+  opacity: 0;
+}
+
+.glowA,
+.glowB,
+.grid {
+  transition: opacity 0.6s ease;
+}
+
+@media (max-width: 960px) {
+  .scene {
+    --cx: 50vw;
+  }
+}

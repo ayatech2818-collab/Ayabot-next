@@ -37,6 +37,7 @@ export default function RootLayout({
     <html
       lang="en"
       data-theme="dark"
+      data-scene="on"
       className={`${inter.variable} ${spaceMono.variable}`}
       suppressHydrationWarning
     >

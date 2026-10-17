@@ -259,6 +259,17 @@
   }
 }
 
+/* Over the background scene, frost the top-bar pills so they stay readable. */
+:global(html[data-scene="on"]) .badge,
+:global(html[data-scene="on"]) .panelToggle {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+:global(html[data-scene="on"][data-theme="light"]) .badge {
+  background: rgba(255, 255, 255, 0.6);
+}
+
 @keyframes popBadge {
   from {
     transform: scale(0.4);
@@ -408,5 +419,26 @@
 @media (prefers-reduced-motion: reduce) {
   .badgeDot {
     animation: none !important;
+  }
+}
+
+/* The scene toggle stays available on phones and tablets (the panel toggle does not). */
+@media (max-width: 960px) {
+  .sceneToggle {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 560px) {
+  .sceneToggle {
+    height: 27px;
+    padding: 0 7px;
+  }
+}
+
+@media (max-width: 360px) {
+  .sceneToggle {
+    height: 24px;
+    padding: 0 5px;
   }
 }

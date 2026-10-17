@@ -15,6 +15,9 @@ const STARS = Array.from({ length: 70 }, (_, i) => ({
 export default function Backdrop() {
   return (
     <div className={styles.backdrop} aria-hidden="true">
+      {/* Glass-city scene (toggleable via <html data-scene>); positioned to sit behind Aya. */}
+      <div className={styles.scene} />
+      <div className={styles.sceneTint} />
       <div className={styles.glowA} />
       <div className={styles.glowB} />
       <div className={styles.grid} />

@@ -1,22 +1,16 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ResolvedTheme } from "../hooks/useTheme";
 import type { SpeechFeatures } from "../utils/audioProcessing";
-import { AdmissionsIcon, AlertIcon, CloseIcon, CoursesIcon, FeesIcon, SparkleIcon } from "./icons";
+import { AdmissionsIcon, AlertIcon, ChevronUpIcon, CloseIcon, CoursesIcon, FeesIcon, SparkleIcon } from "./icons";
 import { PHASE_COPY, type Phase } from "./phase";
+import RobotLoader from "./RobotLoader";
 import styles from "./Stage.module.css";
 
-const RobotScene = dynamic(() => import("./RobotScene"), {
-  ssr: false,
-  loading: () => (
-    <div className={styles.loading}>
-      <div className={styles.loadingSpinner} />
-      <div className={styles.loadingText}>Waking up Aya…</div>
-    </div>
-  ),
-});
+// The loader overlay in the stage covers both the script download and the model download.
+const RobotScene = dynamic(() => import("./RobotScene"), { ssr: false, loading: () => null });
 
 export const TOPICS = [
   {
@@ -56,6 +50,8 @@ type StageProps = {
   onDismissError: () => void;
   /** Small buttons pinned to the stage's top-right corner (e.g. full screen). */
   topActions?: ReactNode;
+  /** Bumped whenever the view jumps in size (full screen); plays a short cover-up transition. */
+  viewEpoch?: number;
   controls: ReactNode;
 };
 
@@ -69,8 +65,36 @@ export default function Stage({
   onRetry,
   onDismissError,
   topActions,
+  viewEpoch = 0,
   controls,
 }: StageProps) {
+  const [modelReady, setModelReady] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const handleModelReady = useCallback(() => setModelReady(true), []);
+
+  // Quick questions stay tucked into a launcher until asked for, to keep the scene clean.
+  const [quickOpen, setQuickOpen] = useState(false);
+  const quickRef = useRef<HTMLDivElement>(null);
+  const quickLauncherRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!quickOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!quickRef.current?.contains(event.target as Node)) setQuickOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setQuickOpen(false);
+        quickLauncherRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [quickOpen]);
   const pointerStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const isActive = phase !== "idle" && phase !== "error";
   const copy = PHASE_COPY[phase];
@@ -108,9 +132,6 @@ export default function Stage({
         <h1 id="stage-title" className={styles.title}>
           Hi, I&apos;m <span className={styles.highlight}>Aya</span>.
         </h1>
-        <p className={styles.description}>
-          Ask me about admissions, subjects, fees or student life — in English, Malayalam, Hindi or Arabic.
-        </p>
       </header>
 
       <div className={styles.robotArea}>
@@ -120,6 +141,7 @@ export default function Stage({
 
         <div
           className={styles.canvas}
+          data-ready={modelReady}
           role="button"
           tabIndex={0}
           aria-label={isActive ? "End conversation with Aya" : "Start conversation with Aya"}
@@ -133,8 +155,21 @@ export default function Stage({
             getSpeechFeatures={getSpeechFeatures}
             theme={theme}
             active={phase === "listening" || phase === "user-speaking" || phase === "aya-speaking" || phase === "muted"}
+            onReady={handleModelReady}
+            onProgress={setLoadProgress}
           />
         </div>
+
+        <div className={styles.loaderLayer} data-hidden={modelReady} aria-hidden={modelReady}>
+          <RobotLoader label="Waking up Aya" progress={loadProgress} />
+        </div>
+
+        {viewEpoch > 0 && modelReady && (
+          // Remounted per view change so its fade-out animation replays each time.
+          <div key={viewEpoch} className={styles.viewVeil} aria-hidden="true">
+            <RobotLoader label="Adjusting view" compact />
+          </div>
+        )}
 
         <div className={styles.status} aria-live="polite">
           <span className={styles.statusDot} aria-hidden="true" />
@@ -162,32 +197,61 @@ export default function Stage({
       )}
 
       <div className={styles.bottom}>
-        <nav className={styles.quickPanel} aria-labelledby="quick-questions-title">
-          <div className={styles.quickHeader}>
+        <div className={styles.quickDock} ref={quickRef}>
+          <nav
+            id="quick-questions"
+            className={styles.quickPanel}
+            data-open={quickOpen}
+            inert={!quickOpen}
+            aria-labelledby="quick-questions-title"
+          >
+            <div className={styles.quickHeader}>
+              <span className={styles.quickBadge} aria-hidden="true">
+                <SparkleIcon size={12} />
+              </span>
+              <span id="quick-questions-title" className={styles.quickTitle}>Quick questions</span>
+              <span className={styles.quickHint}>Tap to ask Aya</span>
+            </div>
+            <div className={styles.topics}>
+              {TOPICS.map(({ id, label, Icon, prompt }, index) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={styles.topic}
+                  style={{ "--i": index } as React.CSSProperties}
+                  onClick={() => {
+                    onTopic(prompt);
+                    setQuickOpen(false);
+                  }}
+                  disabled={phase === "connecting"}
+                  title={`Ask Aya: ${prompt}`}
+                >
+                  <span className={styles.topicIcon} aria-hidden="true">
+                    <Icon size={14} />
+                  </span>
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          <button
+            ref={quickLauncherRef}
+            type="button"
+            className={styles.quickLauncher}
+            onClick={() => setQuickOpen(open => !open)}
+            aria-expanded={quickOpen}
+            aria-controls="quick-questions"
+            aria-label="Quick questions"
+            title={quickOpen ? "Hide quick questions" : "Quick questions"}
+          >
             <span className={styles.quickBadge} aria-hidden="true">
               <SparkleIcon size={12} />
             </span>
-            <span id="quick-questions-title" className={styles.quickTitle}>Quick questions</span>
-            <span className={styles.quickHint}>Tap to ask Aya</span>
-          </div>
-          <div className={styles.topics}>
-            {TOPICS.map(({ id, label, Icon, prompt }) => (
-              <button
-                key={id}
-                type="button"
-                className={styles.topic}
-                onClick={() => onTopic(prompt)}
-                disabled={phase === "connecting"}
-                title={`Ask Aya: ${prompt}`}
-              >
-                <span className={styles.topicIcon} aria-hidden="true">
-                  <Icon size={14} />
-                </span>
-                <span>{label}</span>
-              </button>
-            ))}
-          </div>
-        </nav>
+            <span className={styles.quickLauncherLabel}>Quick questions</span>
+            <ChevronUpIcon size={16} className={styles.quickChevron} />
+          </button>
+        </div>
         {controls}
       </div>
     </section>
