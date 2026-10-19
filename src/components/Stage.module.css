@@ -1,0 +1,1027 @@
+.stage {
+  --phase-color: var(--text-subtle);
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  min-height: 0;
+  height: 100%;
+  padding: clamp(18px, 2.4vw, 32px);
+  border-radius: var(--radius-xl);
+  background: var(--stage-bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.stage[data-phase="connecting"] { --phase-color: var(--warning); }
+.stage[data-phase="listening"] { --phase-color: var(--success); }
+.stage[data-phase="user-speaking"] { --phase-color: var(--user); }
+.stage[data-phase="aya-speaking"],
+.stage[data-phase="ending"] { --phase-color: var(--accent); }
+.stage[data-phase="muted"] { --phase-color: var(--danger); }
+.stage[data-phase="error"] { --phase-color: var(--danger); }
+
+/* ===== Background scene: the card dissolves into the scene ===== */
+.stage {
+  transition: background 0.5s ease, border-color 0.5s ease, box-shadow 0.5s ease;
+}
+
+:global(html[data-scene="on"]) .stage {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:global(html[data-scene="on"]) .status {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* ===== Corner actions (full screen) ===== */
+.topActions {
+  position: absolute;
+  top: clamp(14px, 1.8vw, 22px);
+  right: clamp(14px, 1.8vw, 22px);
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+}
+
+/* ===== Intro ===== */
+.intro {
+  position: relative;
+  z-index: 2;
+  max-width: 34rem;
+}
+
+.eyebrow {
+  display: inline-block;
+  margin-bottom: 10px;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.title {
+  font-size: clamp(1.9rem, 3.4vw, 2.9rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.highlight {
+  background: linear-gradient(120deg, var(--accent) 10%, var(--user) 95%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.description {
+  margin-top: 10px;
+  max-width: 30rem;
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* ===== Robot area ===== */
+.robotArea {
+  position: relative;
+  min-height: 300px;
+  container-type: size;
+}
+
+.halo,
+.ring,
+.ringPulse {
+  position: absolute;
+  left: 50%;
+  top: 47%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  pointer-events: none;
+  translate: -50% -50%;
+}
+
+.halo {
+  width: min(92cqw, 96cqh);
+  background: radial-gradient(circle, var(--halo) 0%, transparent 62%);
+  z-index: 0;
+}
+
+.ring {
+  width: min(70cqw, 74cqh);
+  border: 2px solid color-mix(in srgb, var(--phase-color) 70%, transparent);
+  box-shadow:
+    0 0 32px -4px color-mix(in srgb, var(--phase-color) 55%, transparent),
+    inset 0 0 40px -10px color-mix(in srgb, var(--phase-color) 45%, transparent);
+  scale: calc(1 + max(var(--aya-level, 0), var(--user-level, 0)) * 0.09);
+  opacity: 0.85;
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+  z-index: 0;
+}
+
+.stage[data-phase="idle"] .ring,
+.stage[data-phase="error"] .ring {
+  opacity: 0.35;
+  border-style: dashed;
+}
+
+.ringPulse {
+  width: min(70cqw, 74cqh);
+  border: 1px solid var(--phase-color);
+  opacity: 0;
+  z-index: 0;
+}
+
+.stage[data-phase="listening"] .ringPulse,
+.stage[data-phase="connecting"] .ringPulse {
+  animation: ringPulse 2.6s ease-out infinite;
+}
+
+.canvas {
+  /* Sized from the stage height and centred with CSS, so widening or narrowing the stage
+     (hiding Live activity) never resizes the 3D scene: Aya just glides with the layout. */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: min(100cqw, 150cqh);
+  translate: -50% 0;
+  z-index: 1;
+  cursor: pointer;
+  border-radius: var(--radius-lg);
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    opacity 0.8s ease,
+    scale 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* If the box changes size (full screen), stretch the last frame to fit until the scene
+   re-renders at the new size, instead of leaving it pinned to the top-left corner. */
+.canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.canvas[data-ready="false"] {
+  opacity: 0;
+  scale: 0.94;
+}
+
+/* ===== Loading + view-change overlays ===== */
+.loaderLayer,
+.viewVeil {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.loaderLayer {
+  transition:
+    opacity 0.6s ease,
+    scale 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+.loaderLayer[data-hidden="true"] {
+  opacity: 0;
+  scale: 1.06;
+  visibility: hidden;
+  transition:
+    opacity 0.6s ease,
+    scale 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0.6s;
+}
+
+.viewVeil {
+  border-radius: var(--radius-lg);
+  background: radial-gradient(ellipse at 50% 45%, color-mix(in srgb, var(--surface-strong) 70%, transparent), transparent 75%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: veil 0.75s ease forwards;
+}
+
+@keyframes veil {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+.canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -6px;
+}
+
+
+/* ===== Status chip ===== */
+.status {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  z-index: 2;
+  translate: -50% 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 16px);
+  padding: 8px 16px 8px 12px;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  border: 1px solid color-mix(in srgb, var(--phase-color) 35%, var(--border));
+  box-shadow: var(--shadow-sm);
+  white-space: nowrap;
+  transition: border-color 0.3s ease;
+}
+
+.statusDot {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--phase-color);
+}
+
+.stage:not([data-phase="idle"]):not([data-phase="error"]) .statusDot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid var(--phase-color);
+  opacity: 0;
+  animation: dotPing 1.6s ease-out infinite;
+}
+
+.statusLabel {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.statusHint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.statusHint::before {
+  content: "·";
+  margin-right: 10px;
+  color: var(--text-subtle);
+}
+
+/* ===== Error ===== */
+.error {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 12px 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--text);
+}
+
+.errorIcon {
+  flex: none;
+  color: var(--danger);
+}
+
+.errorText {
+  flex: 1;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.errorRetry {
+  flex: none;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.errorClose {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.errorClose:hover {
+  color: var(--text);
+  background: var(--surface-muted);
+}
+
+.errorRetry:focus-visible,
+.errorClose:focus-visible,
+.topic:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ===== Quick questions + controls ===== */
+.bottom {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+/* Purple glass card with a gradient hairline border (drawn by ::before). */
+.quickPanel {
+  position: relative;
+  width: min(100%, 640px);
+  padding: 12px 14px 14px;
+  border-radius: 22px;
+  background: var(--glass-bg);
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  isolation: isolate;
+}
+
+.quickPanel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--glass-border);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.quickHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 10px;
+}
+
+.quickBadge {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 7px;
+  background: var(--cta-gradient);
+  color: #fff;
+  box-shadow: 0 4px 12px -4px var(--cta-glow);
+}
+
+.quickTitle {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--glass-text);
+}
+
+.quickHint {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--glass-muted);
+}
+
+.topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.topic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 12px 9px 9px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-chip-border);
+  background: var(--glass-chip);
+  color: var(--glass-text);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 550;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  cursor: pointer;
+  overflow: hidden;
+  isolation: isolate;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Gradient fill fades in on hover (gradients can't transition directly). */
+.topic::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--glass-chip-hover);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: -1;
+}
+
+.topic > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topicIcon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  background: var(--cta-gradient);
+  color: #fff;
+  box-shadow: 0 4px 10px -4px var(--cta-glow), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.topic:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--glass-muted) 55%, transparent);
+  box-shadow: 0 10px 24px -12px var(--cta-glow);
+}
+
+.topic:hover:not(:disabled)::before {
+  opacity: 1;
+}
+
+.topic:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+}
+
+.topic:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+@keyframes ringPulse {
+  0% {
+    opacity: 0.55;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.18;
+  }
+}
+
+@keyframes dotPing {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 960px) {
+  .stage {
+    border-radius: var(--radius-lg);
+  }
+
+  .intro {
+    text-align: center;
+    margin: 0 auto;
+  }
+
+  .description {
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .stage {
+    padding: 10px 10px 8px 10px;
+    border-radius: 16px;
+  }
+
+  .intro {
+    max-width: 100%;
+  }
+
+  .eyebrow {
+    font-size: 0.64rem;
+    margin-bottom: 2px;
+    letter-spacing: 0.12em;
+  }
+
+  .title {
+    font-size: clamp(1.22rem, 4.4vw, 1.45rem);
+    line-height: 1.1;
+  }
+
+  .description {
+    margin-top: 3px;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    max-width: 25rem;
+  }
+
+  .robotArea {
+    min-height: 180px;
+  }
+
+  .status {
+    bottom: 4px;
+    padding: 4px 10px;
+    gap: 6px;
+    max-width: calc(100% - 12px);
+  }
+
+  .statusDot {
+    width: 7px;
+    height: 7px;
+  }
+
+  .statusLabel {
+    font-size: 0.74rem;
+  }
+
+  .statusHint {
+    display: none;
+  }
+
+  .error {
+    margin-top: 8px;
+    padding: 8px 10px;
+    gap: 8px;
+    flex-wrap: wrap;
+    border-radius: 10px;
+  }
+
+  .errorIcon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .errorText {
+    flex-basis: calc(100% - 64px);
+    font-size: 0.78rem;
+    line-height: 1.3;
+  }
+
+  .errorRetry {
+    margin-left: 24px;
+    padding: 4px 10px;
+    font-size: 0.72rem;
+  }
+
+  .errorClose {
+    width: 24px;
+    height: 24px;
+  }
+
+  .bottom {
+    gap: 8px;
+    margin-top: 6px;
+    width: 100%;
+  }
+
+  .quickPanel {
+    width: 100%;
+    padding: 7px 8px 8px;
+    border-radius: 14px;
+  }
+
+  .quickHeader {
+    margin: 0 1px 6px;
+    gap: 6px;
+  }
+
+  .quickBadge {
+    width: 17px;
+    height: 17px;
+    border-radius: 5px;
+  }
+
+  .quickTitle {
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+  }
+
+  .quickHint {
+    display: none;
+  }
+
+  .topics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .topic {
+    justify-content: flex-start;
+    padding: 5px 8px 5px 6px;
+    font-size: 0.72rem;
+    line-height: 1.15;
+    border-radius: 10px;
+    gap: 6px;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .topicIcon {
+    width: 21px;
+    height: 21px;
+    border-radius: 6px;
+  }
+}
+
+@media (max-width: 360px) {
+  .stage {
+    padding: 8px 7px 6px 7px;
+    border-radius: 13px;
+  }
+
+  .eyebrow {
+    font-size: 0.58rem;
+    margin-bottom: 2px;
+  }
+
+  .title {
+    font-size: 1.15rem;
+  }
+
+  .description {
+    font-size: 0.7rem;
+    line-height: 1.25;
+  }
+
+  .robotArea {
+    min-height: 155px;
+  }
+
+  .status {
+    padding: 3px 8px;
+    bottom: 3px;
+    gap: 5px;
+  }
+
+  .statusDot {
+    width: 6px;
+    height: 6px;
+  }
+
+  .statusLabel {
+    font-size: 0.68rem;
+  }
+
+  .bottom {
+    gap: 5px;
+    margin-top: 4px;
+  }
+
+  .quickPanel {
+    padding: 5px 6px 6px;
+    border-radius: 12px;
+  }
+
+  .quickHeader {
+    margin: 0 1px 4px;
+    gap: 5px;
+  }
+
+  .quickBadge {
+    width: 15px;
+    height: 15px;
+    border-radius: 4px;
+  }
+
+  .quickTitle {
+    font-size: 0.56rem;
+  }
+
+  .topics {
+    gap: 4px;
+  }
+
+  .topic {
+    padding: 4px 6px 4px 5px;
+    font-size: 0.66rem;
+    border-radius: 8px;
+    gap: 4px;
+  }
+
+  .topicIcon {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring {
+    scale: 1;
+  }
+
+  .stage .ringPulse,
+  .stage .statusDot::after {
+    animation: none !important;
+  }
+}
+
+/* ===== Collapsible quick questions =====
+   A launcher pill sits at the left of the controls row; the topics open upward from it.
+   Container query units/queries use the bottom row's width. */
+.bottom {
+  flex-direction: row;
+  justify-content: center;
+  align-items: flex-end;
+  container-type: inline-size;
+}
+
+.quickDock {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 3;
+}
+
+.quickLauncher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 14px 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--glass-bg);
+  color: var(--glass-text);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  cursor: pointer;
+  isolation: isolate;
+  transition: transform 0.2s ease, box-shadow 0.25s ease;
+}
+
+.quickLauncher::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--glass-border);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.quickLauncher:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--glass-highlight), 0 14px 30px -14px var(--cta-glow);
+}
+
+.quickLauncher:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.quickLauncher .quickBadge {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.quickChevron {
+  color: var(--glass-muted);
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quickLauncher[aria-expanded="true"] .quickChevron {
+  transform: rotate(180deg);
+}
+
+.quickLauncher[aria-expanded="true"] {
+  box-shadow: var(--glass-highlight), 0 0 0 2px color-mix(in srgb, var(--glass-muted) 45%, transparent), var(--glass-shadow);
+}
+
+/* The topics card floats above the launcher and grows out of its corner. */
+.quickDock .quickPanel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 12px);
+  width: min(340px, calc(100cqw - 8px));
+  transform-origin: bottom left;
+  transition:
+    opacity 0.28s ease,
+    transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+.quickDock .quickPanel[data-open="false"] {
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.25s ease,
+    visibility 0s linear 0.25s;
+}
+
+.quickDock .quickPanel .topics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.quickDock .quickPanel .topic {
+  justify-content: flex-start;
+  transition:
+    opacity 0.3s ease calc(var(--i, 0) * 45ms + 60ms),
+    translate 0.4s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--i, 0) * 45ms + 60ms),
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.quickDock .quickPanel[data-open="false"] .topic {
+  opacity: 0;
+  translate: 0 8px;
+  transition: none;
+}
+
+/* Narrow stage: keep just the sparkle so it never collides with the centred controls. */
+@container (max-width: 720px) {
+  .quickLauncherLabel {
+    display: none;
+  }
+
+  .quickLauncher {
+    padding: 0 12px;
+    gap: 6px;
+  }
+}
+
+/* Phones: launcher sits beside the controls in the row instead of floating at the edge. */
+@media (max-width: 560px) {
+  .bottom {
+    gap: 8px;
+  }
+
+  .quickDock {
+    position: relative;
+    left: auto;
+    bottom: auto;
+    flex: none;
+  }
+
+  .quickLauncher {
+    height: 46px;
+    padding: 0 10px;
+    gap: 4px;
+  }
+
+  .quickLauncher .quickBadge {
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+  }
+
+  .quickDock .quickPanel {
+    width: min(330px, calc(100vw - 40px));
+    bottom: calc(100% + 10px);
+  }
+
+  .quickDock .quickPanel .topics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quickDock .quickPanel,
+  .quickDock .quickPanel .topic,
+  .quickChevron {
+    transition: none !important;
+  }
+}
+
+/* ===== Phones: a smaller, calmer Aya =====
+   The camera's vertical field of view is fixed, so Aya's size follows the canvas height.
+   On phones the canvas uses the lower ~76% of the robot area (feet stay by the status chip),
+   which makes her about a quarter smaller and leaves breathing room under the heading. The
+   halo and status ring move down to stay centred on her. Desktop is unaffected. */
+@media (max-width: 560px) {
+  .canvas {
+    top: auto;
+    bottom: 0;
+    height: 76cqh;
+    width: min(100cqw, 114cqh);
+  }
+
+  .halo,
+  .ring,
+  .ringPulse {
+    top: 60%;
+  }
+
+  .halo {
+    width: min(80cqw, 74cqh);
+  }
+
+  .ring,
+  .ringPulse {
+    width: min(60cqw, 56cqh);
+  }
+
+  .quickLauncher {
+    height: 40px;
+    padding: 0 9px;
+  }
+
+  .quickLauncher .quickBadge {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+  }
+
+  .quickChevron {
+    width: 14px;
+    height: 14px;
+  }
+
+  .topActions {
+    top: 8px;
+    right: 8px;
+  }
+
+  .topActions > * {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
+  .topActions svg {
+    width: 15px;
+    height: 15px;
+  }
+}
+
+@media (max-width: 360px) {
+  .canvas {
+    height: 72cqh;
+  }
+
+  .quickLauncher {
+    height: 36px;
+    padding: 0 7px;
+  }
+}

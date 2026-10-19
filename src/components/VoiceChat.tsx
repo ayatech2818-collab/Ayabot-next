@@ -1,191 +1,232 @@
 "use client";
 
-import React from 'react';
-import { useGeminiLive } from '../hooks/useGeminiLive';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useGeminiLive } from "../hooks/useGeminiLive";
+import { useAudioLevels } from "../hooks/useAudioLevels";
+import { useFullscreen } from "../hooks/useFullscreen";
+import { useScene } from "../hooks/useScene";
+import { useTheme } from "../hooks/useTheme";
+import ActivityPanel from "./ActivityPanel";
+import Backdrop from "./Backdrop";
+import ControlDock from "./ControlDock";
+import Stage from "./Stage";
+import ThemeSwitcher from "./ThemeSwitcher";
+import { MaximizeIcon, MinimizeIcon, PanelRightIcon, SceneIcon } from "./icons";
+import { getPhase } from "./phase";
+import styles from "./VoiceChat.module.css";
 
-// Microphone SVG icon component
-function MicIcon({ size = 40 }: { size?: number }) {
-  return (
-    <svg
-      className="orb-mic-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-      <line x1="12" y1="19" x2="12" y2="23" />
-      <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-  );
-}
+const STATUS_BADGE = {
+  idle: "Ready",
+  connecting: "Connecting",
+  connected: "Live",
+  error: "Offline",
+} as const;
 
-// Equalizer bars icon for speaking state
-function EqualizerBars() {
-  return (
-    <div className="equalizer-bars">
-      <span className="eq-bar" style={{ animationDelay: '0s' }} />
-      <span className="eq-bar" style={{ animationDelay: '0.15s' }} />
-      <span className="eq-bar" style={{ animationDelay: '0.3s' }} />
-      <span className="eq-dot" style={{ animationDelay: '0.1s' }} />
-      <span className="eq-dot" style={{ animationDelay: '0.25s' }} />
-      <span className="eq-dot" style={{ animationDelay: '0.35s' }} />
-      <span className="eq-dot" style={{ animationDelay: '0.45s' }} />
-      <span className="eq-bar" style={{ animationDelay: '0.45s' }} />
-      <span className="eq-bar" style={{ animationDelay: '0.6s' }} />
-    </div>
-  );
-}
-
-// Volume icon for navbar
-function VolumeIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-    </svg>
-  );
-}
-
-// Reset icon for navbar
-function ResetIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 2v6h-6" />
-      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-      <path d="M3 22v-6h6" />
-      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-    </svg>
-  );
-}
-
-// Starfield component — renders only on client to avoid hydration mismatch
-function Starfield() {
-  const [stars, setStars] = React.useState<Array<{id: number; className: string; style: React.CSSProperties}>>([]);
-
-  React.useEffect(() => {
-    const result = [];
-    for (let i = 0; i < 60; i++) {
-      const types = ['', 'dim', 'bright'];
-      const type = types[Math.floor(Math.random() * 3)];
-      result.push({
-        id: i,
-        className: `star ${type}`,
-        style: {
-          left: `${Math.random() * 100}%`,
-          top: `${Math.random() * 100}%`,
-          animationDelay: `${Math.random() * 4}s`,
-          animationDuration: `${3 + Math.random() * 4}s`,
-        },
-      });
-    }
-    setStars(result);
-  }, []);
-
-  return (
-    <div className="starfield">
-      {stars.map((star) => (
-        <div key={star.id} className={star.className} style={star.style} />
-      ))}
-    </div>
-  );
-}
+// Matches the CSS breakpoint where Live activity becomes a side panel instead of a bottom sheet.
+const DESKTOP_QUERY = "(min-width: 961px)";
+const subscribeDesktop = (listener: () => void) => {
+  const media = window.matchMedia(DESKTOP_QUERY);
+  media.addEventListener("change", listener);
+  return () => media.removeEventListener("change", listener);
+};
+const getIsDesktop = () => window.matchMedia(DESKTOP_QUERY).matches;
+const getServerDesktop = () => true;
 
 export default function VoiceChat() {
-  const { isConnected, isSpeaking, connect, disconnect } = useGeminiLive();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { resolved: theme } = useTheme();
+  const { sceneOn, setSceneOn } = useScene();
+  const {
+    status,
+    error,
+    isSpeaking,
+    isUserSpeaking,
+    isMuted,
+    isEnding,
+    volume,
+    transcript,
+    events,
+    connectedAt,
+    replyLatencyMs,
+    getPlaybackLevel,
+    getSpeechFeatures,
+    getInputLevel,
+    connect,
+    disconnect,
+    endConversation,
+    askTopic,
+    toggleMute,
+    setVolume,
+    resetSession,
+    dismissError,
+  } = useGeminiLive();
 
-  const handleOrbClick = () => {
-    if (isConnected) {
+  const phase = getPhase({ status, isSpeaking, isUserSpeaking, isMuted, isEnding });
+
+  // Desktop-only: hide Live activity so Aya's stage fills the width.
+  const isDesktop = useSyncExternalStore(subscribeDesktop, getIsDesktop, getServerDesktop);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [seenCount, setSeenCount] = useState(0);
+  // Increments on every full-screen change so the stage can cover the jump in size.
+  const [viewEpoch, setViewEpoch] = useState(0);
+  const unseen = panelOpen ? 0 : Math.max(0, transcript.length - seenCount);
+  const { isFullscreen, supported: fullscreenSupported, toggle: toggleFullscreen } = useFullscreen();
+  // Panel state to restore when leaving fullscreen (null = fullscreen wasn't entered from here).
+  const restorePanelRef = useRef<boolean | null>(null);
+  const enteringFullscreenRef = useRef(false);
+  const latestRef = useRef({ panelOpen, transcriptLength: transcript.length });
+  useEffect(() => {
+    latestRef.current = { panelOpen, transcriptLength: transcript.length };
+  }, [panelOpen, transcript.length]);
+
+  const togglePanel = useCallback(() => {
+    if (panelOpen) setSeenCount(transcript.length);
+    setPanelOpen(!panelOpen);
+  }, [panelOpen, transcript.length]);
+
+  const handleFullscreen = useCallback(() => {
+    enteringFullscreenRef.current = !isFullscreen;
+    void toggleFullscreen().then(ok => {
+      if (!ok) enteringFullscreenRef.current = false;
+    });
+  }, [isFullscreen, toggleFullscreen]);
+
+  useEffect(() => {
+    // React to the browser's event rather than the click: fullscreen can be refused, and Esc
+    // or the browser's own controls can end it too.
+    const onChange = () => {
+      setViewEpoch(epoch => epoch + 1);
+      if (document.fullscreenElement) {
+        if (!enteringFullscreenRef.current) return;
+        enteringFullscreenRef.current = false;
+        // Focus on Aya: tuck the panel away while fullscreen, bring it back afterwards.
+        const { panelOpen: open, transcriptLength } = latestRef.current;
+        restorePanelRef.current = open;
+        if (open) {
+          setSeenCount(transcriptLength);
+          setPanelOpen(false);
+        }
+      } else if (restorePanelRef.current !== null) {
+        setPanelOpen(restorePanelRef.current);
+        restorePanelRef.current = null;
+      }
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  useAudioLevels(rootRef, getPlaybackLevel, getInputLevel, status === "connected");
+
+  const handleToggleCall = useCallback(() => {
+    if (status === "connected") {
+      // Aya says goodbye first; pressing again while she does closes right away.
+      endConversation();
+    } else if (status === "connecting") {
       disconnect();
     } else {
-      connect();
+      void connect();
     }
-  };
+  }, [status, connect, disconnect, endConversation]);
 
-  const orbClasses = [
-    'orb',
-    isConnected ? 'active' : '',
-    isSpeaking ? 'speaking' : '',
-  ].filter(Boolean).join(' ');
-
-  // Status text
-  let statusLabel = 'Ready';
-  let statusSub = 'TAP TO START SPEAKING';
-  if (isConnected && isSpeaking) {
-    statusLabel = 'Speaking...';
-    statusSub = 'AI RESPONSE ACTIVE';
-  } else if (isConnected) {
-    statusLabel = 'Listening...';
-    statusSub = 'VOICE INPUT ACTIVE';
-  }
+  const handleRetry = useCallback(() => {
+    void connect();
+  }, [connect]);
 
   return (
-    <>
-      <Starfield />
+    <div ref={rootRef} className={styles.app} data-panel={panelOpen ? "open" : "closed"}>
+      <Backdrop />
 
-      {/* Navbar */}
-      <nav className="navbar" id="navbar">
-        <div className="navbar-brand">
-          <div className="navbar-logo">A</div>
-          <span className="navbar-title">AYABOT</span>
+      <header className={styles.topbar}>
+        <div className={styles.brand}>
+          <span className={styles.logo} aria-hidden="true">A</span>
+          <span className={styles.brandText}>
+            <span className={styles.brandName}>AYABOT</span>
+            <span className={styles.brandSub}>Ayadi Glocal School</span>
+          </span>
         </div>
-        <div className="navbar-controls">
-          <div className={`navbar-badge ${isConnected ? 'online' : 'offline'}`}>
-            <span className="badge-dot" />
-            {isConnected ? 'ONLINE' : 'OFFLINE'}
-          </div>
-          <button className="navbar-icon-btn" aria-label="Toggle volume" id="btn-volume">
-            <VolumeIcon />
+
+        <div className={styles.topbarActions}>
+          <span className={styles.badge} data-status={status} role="status">
+            <span className={styles.badgeDot} aria-hidden="true" />
+            {STATUS_BADGE[status]}
+          </span>
+          <button
+            type="button"
+            className={styles.panelToggle}
+            onClick={togglePanel}
+            aria-pressed={!panelOpen}
+            aria-controls="live-activity"
+            title={panelOpen ? "Hide live activity" : "Show live activity"}
+          >
+            <PanelRightIcon open={panelOpen} size={17} strokeWidth={1.9} />
+            <span className={styles.panelToggleLabel}>{panelOpen ? "Hide activity" : "Show activity"}</span>
+            {unseen > 0 && (
+              <span className={styles.unseen} aria-label={`${unseen} new`}>{unseen > 99 ? "99+" : unseen}</span>
+            )}
           </button>
-          <button className="navbar-icon-btn" aria-label="Reset session" id="btn-reset" onClick={disconnect}>
-            <ResetIcon />
+          <button
+            type="button"
+            className={`${styles.panelToggle} ${styles.sceneToggle}`}
+            onClick={() => setSceneOn(!sceneOn)}
+            aria-pressed={sceneOn}
+            title={sceneOn ? "Turn off background scene" : "Turn on background scene"}
+          >
+            <SceneIcon size={16} strokeWidth={1.9} />
+            <span className={styles.panelToggleLabel}>{sceneOn ? "Scene on" : "Scene off"}</span>
           </button>
+          <ThemeSwitcher />
         </div>
-      </nav>
+      </header>
 
-      {/* Main Area */}
-      <main className="main-container" id="main-content">
-        <div className="glass-frame">
-          {/* Corner decorations */}
-          <div className="corner-tr" />
-          <div className="corner-bl" />
-          <div className="frame-dot top-left" />
-          <div className="frame-dot top-right" />
-          <div className="frame-dot bottom-left" />
-          <div className="frame-dot bottom-right" />
+      <main className={styles.main} data-panel={panelOpen ? "open" : "closed"}>
+        <Stage
+          phase={phase}
+          theme={theme}
+          error={error}
+          getSpeechFeatures={getSpeechFeatures}
+          onRobotActivate={handleToggleCall}
+          onTopic={askTopic}
+          onRetry={handleRetry}
+          onDismissError={dismissError}
+          viewEpoch={viewEpoch}
+          topActions={
+            fullscreenSupported ? (
+              <button
+                type="button"
+                className={styles.stageIconButton}
+                onClick={handleFullscreen}
+                aria-pressed={isFullscreen}
+                aria-label={isFullscreen ? "Exit full screen" : "Full screen"}
+                title={isFullscreen ? "Exit full screen (Esc)" : "Full screen"}
+              >
+                {isFullscreen ? <MinimizeIcon size={17} /> : <MaximizeIcon size={17} />}
+              </button>
+            ) : null
+          }
+          controls={
+            <ControlDock
+              status={status}
+              isMuted={isMuted}
+              isEnding={isEnding}
+              volume={volume}
+              hasHistory={transcript.length > 0 || events.length > 0}
+              onToggleCall={handleToggleCall}
+              onToggleMute={toggleMute}
+              onVolumeChange={setVolume}
+              onReset={resetSession}
+            />
+          }
+        />
 
-          {/* Orb */}
-          <div className="orb-wrapper">
-            <div className="orb-ring-outer" />
-            <div className="orb-ring-mid" />
-            <div className="orb-ring-inner" />
-            <div className={orbClasses} onClick={handleOrbClick} id="orb-button" role="button" tabIndex={0}>
-              {isSpeaking ? <EqualizerBars /> : <MicIcon size={38} />}
-            </div>
-            <div className="orb-pulse-ring" />
-          </div>
-
-          {/* Status */}
-          <div className="status-text">
-            <div className={`status-label ${isConnected ? 'active' : ''} ${isSpeaking ? 'speaking' : ''}`}>{statusLabel}</div>
-            <div className="status-sublabel">{statusSub}</div>
-          </div>
+        <div className={styles.panelSlot} id="live-activity" inert={isDesktop && !panelOpen}>
+          <ActivityPanel
+            phase={phase}
+            transcript={transcript}
+            events={events}
+            connectedAt={connectedAt}
+            replyLatencyMs={replyLatencyMs}
+          />
         </div>
       </main>
-
-      {/* Bottom CTA */}
-      <div className="bottom-cta">
-        <span className="cta-text">
-          Ask me anything about <span className="cta-highlight">admissions</span>
-        </span>
-      </div>
-    </>
+    </div>
   );
 }
