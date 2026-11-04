@@ -7,8 +7,14 @@ import styles from "../products.module.css";
 const dateFormat = new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" });
 const dateTimeFormat = new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" });
 
-export const formatDate = (value: string) => dateFormat.format(new Date(value));
-export const formatDateTime = (value: string) => dateTimeFormat.format(new Date(value));
+export const formatDate = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : dateFormat.format(date);
+};
+export const formatDateTime = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : dateTimeFormat.format(date);
+};
 
 export function StatusBadge({ active }: { active: boolean }) {
   return (

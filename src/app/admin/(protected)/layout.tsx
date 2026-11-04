@@ -3,7 +3,7 @@ import ThemeSwitcher from "../../../components/ThemeSwitcher";
 import { LogOutIcon, MenuIcon, ShieldIcon } from "../../../components/icons";
 import { requireAdmin } from "../../../lib/auth/admin";
 import { logout } from "../actions";
-import { AdminNavigation, PageContext } from "../_components/AdminNav";
+import { AdminNavigation, MobileMenuBackdrop, PageContext } from "../_components/AdminNav";
 import { ToastProvider } from "../_components/Toaster";
 import styles from "../admin.module.css";
 
@@ -70,6 +70,7 @@ export default async function ProtectedAdminLayout({ children }: { children: Rea
             </div>
             <details className={styles.mobileMenu}>
               <summary aria-label="Open admin navigation"><MenuIcon size={20} /></summary>
+              <MobileMenuBackdrop />
               <div className={styles.mobileMenuPanel}>
                 <AdminNavigation />
                 <form action={logout}>

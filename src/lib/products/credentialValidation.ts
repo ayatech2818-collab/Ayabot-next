@@ -90,7 +90,9 @@ const relativeFormat = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 
 /** "in 3 days", "tomorrow", "2 hours ago"... for expiry and last-used hints. */
 export function relativeTime(value: string, now = Date.now()) {
-  const diff = new Date(value).getTime() - now;
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) return value;
+  const diff = time - now;
   const abs = Math.abs(diff);
   if (abs < 3_600_000) return relativeFormat.format(Math.round(diff / 60_000), "minute");
   if (abs < DAY_MS) return relativeFormat.format(Math.round(diff / 3_600_000), "hour");

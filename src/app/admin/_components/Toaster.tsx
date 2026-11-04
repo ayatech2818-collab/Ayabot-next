@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import { AlertIcon, CheckIcon, CloseIcon } from "../../../components/icons";
+import { AlertIcon, CheckIcon, CloseIcon, InfoIcon } from "../../../components/icons";
 import styles from "./ui.module.css";
 
 type ToastTone = "success" | "error" | "info";
@@ -42,7 +42,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map(toast => (
           <div key={toast.id} className={styles.toast} data-tone={toast.tone} role={toast.tone === "error" ? "alert" : "status"}>
             <span className={styles.toastIcon} aria-hidden="true">
-              {toast.tone === "error" ? <AlertIcon size={16} /> : <CheckIcon size={16} strokeWidth={2.4} />}
+              {toast.tone === "error" ? (
+                <AlertIcon size={16} />
+              ) : toast.tone === "info" ? (
+                <InfoIcon size={16} />
+              ) : (
+                <CheckIcon size={16} strokeWidth={2.4} />
+              )}
             </span>
             <div className={styles.toastBody}>
               <strong>{toast.title}</strong>
