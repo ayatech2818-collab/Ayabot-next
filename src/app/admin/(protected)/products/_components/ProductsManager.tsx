@@ -55,6 +55,16 @@ export default function ProductsManager({ products, startWithCreate = false }: {
     });
   }, [products, filter, deferredQuery]);
 
+  const handleCloseForm = () => {
+    setCreateOpen(false);
+    setEditing(null);
+    if (typeof window !== "undefined" && window.location.search.includes("new=1")) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("new");
+      window.history.replaceState(null, "", `${url.pathname}${url.search ? url.search : ""}`);
+    }
+  };
+
   return (
     <>
       <section className={styles.header}>
@@ -217,7 +227,7 @@ export default function ProductsManager({ products, startWithCreate = false }: {
         )}
       </section>
 
-      <ProductFormDialog open={createOpen || Boolean(editing)} product={editing} onClose={() => { setCreateOpen(false); setEditing(null); }} />
+      <ProductFormDialog open={createOpen || Boolean(editing)} product={editing} onClose={handleCloseForm} />
       <ProductStatusDialog product={statusTarget} onClose={() => setStatusTarget(null)} />
     </>
   );

@@ -53,6 +53,16 @@ export function AdminNavigation() {
   );
 }
 
+export function MobileMenuBackdrop() {
+  return (
+    <div
+      className={styles.mobileBackdrop}
+      aria-hidden="true"
+      onClick={event => event.currentTarget.closest("details")?.removeAttribute("open")}
+    />
+  );
+}
+
 /** Section name shown in the top bar, derived from the current route. */
 export function PageContext() {
   const pathname = usePathname();

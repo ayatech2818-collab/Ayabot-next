@@ -43,6 +43,7 @@ export async function createCredentialAction(
   try {
     const credential = await createCredential(productId, { name, expires_at: expiresAt });
     revalidatePath(productPath(productId));
+    revalidatePath("/admin");
     return { ok: true, credential };
   } catch (error) {
     // 409 here means the product is inactive.
@@ -57,10 +58,12 @@ export async function revokeCredentialAction(productId: string, credentialId: st
   try {
     const credential = await revokeCredential(productId, credentialId);
     revalidatePath(productPath(productId));
+    revalidatePath("/admin");
     return { ok: true, credential };
   } catch (error) {
     // 409 here means the credential was already revoked (e.g. in another tab).
     revalidatePath(productPath(productId));
+    revalidatePath("/admin");
     return toActionFailure(error, { notFound: "This credential no longer exists." });
   }
 }
