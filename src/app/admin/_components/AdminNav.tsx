@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ActivityIcon, ExternalLinkIcon, HomeIcon, PackageIcon } from "../../../components/icons";
+import { ActivityIcon, BookIcon, ExternalLinkIcon, HomeIcon, PackageIcon } from "../../../components/icons";
 import styles from "../admin.module.css";
 
 type NavLink = { href: string; label: string; Icon: typeof HomeIcon; exact: boolean; hint?: string };
@@ -10,6 +10,7 @@ type NavLink = { href: string; label: string; Icon: typeof HomeIcon; exact: bool
 const LINKS: readonly NavLink[] = [
   { href: "/admin", label: "Overview", Icon: HomeIcon, exact: true },
   { href: "/admin/products", label: "Products", Icon: PackageIcon, exact: false },
+  { href: "/admin/knowledge", label: "Knowledge Base", Icon: BookIcon, exact: false },
   { href: "/admin/activity", label: "Activity logs", Icon: ActivityIcon, exact: false, hint: "Soon" },
 ];
 

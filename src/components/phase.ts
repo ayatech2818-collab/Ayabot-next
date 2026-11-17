@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from "../hooks/useGeminiLive";
+import type { ConnectionStatus } from "../hooks/useVoiceSession";
 
 /** What the conversation is doing right now, as shown across the page. */
 export type Phase =

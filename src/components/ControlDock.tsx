@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import type { ConnectionStatus } from "../hooks/useGeminiLive";
+import type { ConnectionStatus } from "../hooks/useVoiceSession";
 import { MicIcon, MicOffIcon, PhoneOffIcon, ResetIcon, VolumeIcon } from "./icons";
 import styles from "./ControlDock.module.css";
 
