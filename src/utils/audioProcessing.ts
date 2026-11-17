@@ -1,9 +1,14 @@
 /**
  * audioProcessing.ts
- * Utilities for capturing, downsampling, playing, and converting raw PCM audio for Gemini Live.
+ * Utilities for capturing, downsampling, playing, and converting raw PCM audio for the voice gateway.
  */
 
-import { blockRms, recordVadBlock, recordVadEvent } from './vadDebug'; // TEMP-DEBUG
+/** Root-mean-square level of a block of 16-bit samples, in 16-bit units. */
+function blockRms(samples: Int16Array): number {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return samples.length ? Math.sqrt(sum / samples.length) : 0;
+}
 
 // Converts a base64 string to a Uint8Array
 export function base64ToUint8Array(base64: string): Uint8Array {
@@ -45,6 +50,8 @@ class PCMProcessor extends AudioWorkletProcessor {
     super();
     this.noiseFloor = 0.001;
     this.alpha = 0.005; // EMA for noise tracking
+    this.targetSampleRate = 16000;
+    this.resampleAccumulator = 0;
   }
   
   process(inputs, outputs, parameters) {
@@ -75,14 +82,24 @@ class PCMProcessor extends AudioWorkletProcessor {
           gain = gain * gain * gain;
       }
 
-      // Convert Float32 to Int16 with gain and soft clipping
-      const int16Data = new Int16Array(channelData.length);
+      // Convert and resample from the AudioContext's actual rate to 16 kHz. Browsers may
+      // ignore a requested AudioContext sample rate, so the worklet's global sampleRate is
+      // the source of truth.
+      const maxOutputLength = Math.ceil(channelData.length * this.targetSampleRate / sampleRate) + 1;
+      const int16Data = new Int16Array(maxOutputLength);
+      let outputLength = 0;
       for (let i = 0; i < channelData.length; i++) {
+        this.resampleAccumulator += this.targetSampleRate;
+        if (this.resampleAccumulator < sampleRate) continue;
+        this.resampleAccumulator -= sampleRate;
         let s = channelData[i] * gain;
         s = Math.max(-1, Math.min(1, s));
-        int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        int16Data[outputLength++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
-      this.port.postMessage(int16Data.buffer, [int16Data.buffer]);
+      if (outputLength > 0) {
+        const output = int16Data.buffer.slice(0, outputLength * Int16Array.BYTES_PER_ELEMENT);
+        this.port.postMessage(output, [output]);
+      }
     }
     return true;
   }
@@ -117,15 +134,6 @@ export class AudioQueue {
   private frequencyData = new Float32Array(256);
   private playbackLevel = 0;
   private volume = 1;
-
-  get currentPlaybackLevel(): number {
-    return this.playbackLevel;
-  }
-
-  /** True when audio is currently being played through speakers */
-  get isPlaying(): boolean {
-    return this.activeSources.length > 0;
-  }
 
   /** Milliseconds of already-queued audio still left to play. */
   get remainingMs(): number {
@@ -297,6 +305,7 @@ export class AudioRecorder {
   private context: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
   public onAudioData: ((base64Data: string) => void) | null = null;
+  public onDeviceEnded: (() => void) | null = null;
 
   // Local VAD Callbacks
   public onSilence: (() => void) | null = null;
@@ -378,7 +387,7 @@ export class AudioRecorder {
 
   private audioBuffer: Int16Array[] = [];
   private audioBufferLength: number = 0;
-  private readonly SEND_CHUNK_SIZE = 4096; // 4096 samples at 16kHz = 256ms
+  private readonly SEND_CHUNK_SIZE = 640; // 640 samples at 16 kHz = 40 ms
 
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({
@@ -392,6 +401,7 @@ export class AudioRecorder {
     });
     this.stream.getAudioTracks().forEach(track => {
       track.enabled = !this.isMuted;
+      track.onended = () => this.onDeviceEnded?.();
     });
 
     const AudioContextClass =
@@ -422,16 +432,21 @@ export class AudioRecorder {
     const blob = new Blob([AudioWorkletSrc], { type: 'application/javascript' });
     const blobURL = URL.createObjectURL(blob);
 
-    await this.context.audioWorklet.addModule(blobURL);
+    try {
+      await this.context.audioWorklet.addModule(blobURL);
+    } finally {
+      URL.revokeObjectURL(blobURL);
+    }
 
     this.workletNode = new AudioWorkletNode(this.context, 'pcm-processor');
     this.workletNode.port.onmessage = (event) => {
       if (this.onAudioData) {
         const int16Array = new Int16Array(event.data);
 
-        // Skip all VAD and audio sending while muted or while bot is speaking (echo suppression)
-        if (this.suppressVAD || this.isMuted) {
-          recordVadBlock(blockRms(int16Array), 0, false, this.isMuted ? 'muted' : 'suppressed', (int16Array.length / 16000) * 1000); // TEMP-DEBUG
+        // Muting stops capture entirely. While Aya is speaking, suppress only local VAD; audio
+        // still reaches the gateway so Gemini can detect a real interruption after browser echo
+        // cancellation has been applied.
+        if (this.isMuted) {
           this.isSpeaking = false;
           this.silenceMs = 0;
           this.resetLoudHistory();
@@ -439,41 +454,36 @@ export class AudioRecorder {
           return;
         }
 
-        // VAD Logic (RMS calculation with smoothing)
-        let sumSquares = 0;
-        for (let i = 0; i < int16Array.length; i++) {
-          sumSquares += int16Array[i] * int16Array[i];
-        }
-        const rms = Math.sqrt(sumSquares / int16Array.length);
-
-        // EMA smoothing for RMS to avoid jitter
-        this.smoothedRms = this.RMS_ALPHA * rms + (1 - this.RMS_ALPHA) * this.smoothedRms;
-
+        const rms = blockRms(int16Array);
         const chunkDurationMs = (int16Array.length / 16000) * 1000;
 
-        this.trackLoudness(rms, chunkDurationMs);
-
-        if (!this.isSpeaking && this.loudMs >= this.SPEECH_START_MS) {
-          this.lastVoiceAt = Date.now();
-          this.isSpeaking = true;
+        if (this.suppressVAD) {
+          this.isSpeaking = false;
           this.silenceMs = 0;
-          recordVadEvent('start', this.smoothedRms); // TEMP-DEBUG
-          if (this.onSpeech) this.onSpeech();
-        } else if (this.loudMs >= this.SPEECH_KEEPALIVE_MS) {
-          this.lastVoiceAt = Date.now();
-          this.silenceMs = 0;
+          this.resetLoudHistory();
+          this.smoothedRms = 0;
         } else {
-          // Quiet, or a burst too short to be voice: count towards the end of speech.
-          if (this.isSpeaking) {
+          // VAD Logic (RMS calculation with smoothing)
+          this.smoothedRms = this.RMS_ALPHA * rms + (1 - this.RMS_ALPHA) * this.smoothedRms;
+          this.trackLoudness(rms, chunkDurationMs);
+
+          if (!this.isSpeaking && this.loudMs >= this.SPEECH_START_MS) {
+            this.lastVoiceAt = Date.now();
+            this.isSpeaking = true;
+            this.silenceMs = 0;
+            if (this.onSpeech) this.onSpeech();
+          } else if (this.loudMs >= this.SPEECH_KEEPALIVE_MS) {
+            this.lastVoiceAt = Date.now();
+            this.silenceMs = 0;
+          } else if (this.isSpeaking) {
+            // Quiet, or a burst too short to be voice: count towards the end of speech.
             this.silenceMs += chunkDurationMs;
             if (this.silenceMs > this.REQUIRED_SILENCE_MS) {
               this.isSpeaking = false;
-              recordVadEvent('end', this.smoothedRms); // TEMP-DEBUG
               if (this.onSilence) this.onSilence();
             }
           }
         }
-        recordVadBlock(rms, this.smoothedRms, this.isSpeaking, 'live', chunkDurationMs); // TEMP-DEBUG
 
         // Buffer audio to send larger chunks (reduces websocket latency overhead)
         this.audioBuffer.push(int16Array);
@@ -486,13 +496,16 @@ export class AudioRecorder {
             combined.set(arr, offset);
             offset += arr.length;
           }
-          const uint8Array = new Uint8Array(combined.buffer);
-          const base64 = uint8ArrayToBase64(uint8Array);
-          this.onAudioData(base64);
+          let sentSamples = 0;
+          while (combined.length - sentSamples >= this.SEND_CHUNK_SIZE) {
+            const frame = combined.slice(sentSamples, sentSamples + this.SEND_CHUNK_SIZE);
+            this.onAudioData(uint8ArrayToBase64(new Uint8Array(frame.buffer)));
+            sentSamples += this.SEND_CHUNK_SIZE;
+          }
 
-          // Reset buffer
-          this.audioBuffer = [];
-          this.audioBufferLength = 0;
+          const remainder = combined.slice(sentSamples);
+          this.audioBuffer = remainder.length > 0 ? [remainder] : [];
+          this.audioBufferLength = remainder.length;
         }
       }
     };
@@ -510,7 +523,10 @@ export class AudioRecorder {
       this.workletNode = null;
     }
     if (this.stream) {
-      this.stream.getTracks().forEach(track => track.stop());
+      this.stream.getTracks().forEach(track => {
+        track.onended = null;
+        track.stop();
+      });
       this.stream = null;
     }
     if (this.context) {

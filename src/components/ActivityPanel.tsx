@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import type { ActivityEvent, ActivityKind, TranscriptEntry } from "../hooks/useGeminiLive";
+import type { ActivityEvent, ActivityKind, TranscriptEntry } from "../hooks/useVoiceSession";
 import { ActivityIcon, ChatIcon, ChevronUpIcon } from "./icons";
 import { PHASE_COPY, type Phase } from "./phase";
 import styles from "./ActivityPanel.module.css";

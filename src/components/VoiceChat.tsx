@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useGeminiLive } from "../hooks/useGeminiLive";
+import { useVoiceSession } from "../hooks/useVoiceSession";
 import { useAudioLevels } from "../hooks/useAudioLevels";
 import { useFullscreen } from "../hooks/useFullscreen";
 import { useScene } from "../hooks/useScene";
@@ -59,7 +59,7 @@ export default function VoiceChat() {
     setVolume,
     resetSession,
     dismissError,
-  } = useGeminiLive();
+  } = useVoiceSession();
 
   const phase = getPhase({ status, isSpeaking, isUserSpeaking, isMuted, isEnding });
 

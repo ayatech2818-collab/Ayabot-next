@@ -1,11 +1,16 @@
 import { useState, useRef, useCallback, useEffect, useSyncExternalStore } from 'react';
 import { AudioQueue, AudioRecorder, type SpeechFeatures } from '../utils/audioProcessing';
-import { AYADI_SYSTEM_PROMPT, FAREWELL_PROMPT, GREETING_PROMPT } from '../constants/prompts';
+import { FAREWELL_PROMPT, GREETING_PROMPT } from '../constants/prompts';
+import {
+  VOICE_INPUT_SAMPLE_RATE,
+  VOICE_OUTPUT_SAMPLE_RATE,
+  isVoiceTicketResponse,
+  parseVoiceServerMessage,
+  type VoiceClientMessage,
+} from '../lib/voice/protocol';
 
-const API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-const MODEL_NAME = "gemini-2.5-flash-native-audio-preview-09-2025";
-// const MODEL_NAME = "gemini-3.1-flash-live-preview";
-const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
+const VOICE_WS_URL = process.env.NEXT_PUBLIC_AYABOT_VOICE_WS_URL || '';
+const TICKET_REQUEST_TIMEOUT_MS = 12_000;
 
 const MAX_EVENTS = 80;
 const MAX_TRANSCRIPT = 200;
@@ -54,6 +59,33 @@ export type ActivityEvent = {
 
 let nextId = 1;
 const makeId = () => nextId++;
+
+function sendVoiceMessage(ws: WebSocket, message: VoiceClientMessage) {
+  ws.send(JSON.stringify(message));
+}
+
+async function requestVoiceTicket(signal: AbortSignal) {
+  const response = await fetch('/api/voice/session', {
+    method: 'POST',
+    cache: 'no-store',
+    signal,
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok || !isVoiceTicketResponse(payload)) {
+    const message =
+      payload &&
+      typeof payload === 'object' &&
+      'error' in payload &&
+      payload.error &&
+      typeof payload.error === 'object' &&
+      'message' in payload.error &&
+      typeof payload.error.message === 'string'
+        ? payload.error.message
+        : 'Could not create a voice session. Please try again.';
+    throw new Error(message);
+  }
+  return payload;
+}
 
 function readStoredVolume() {
   try {
@@ -105,7 +137,7 @@ function describeMicError(error: unknown) {
   return 'Could not start the microphone.';
 }
 
-export function useGeminiLive() {
+export function useVoiceSession() {
   const [status, setStatus] = useState<ConnectionStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -123,7 +155,7 @@ export function useGeminiLive() {
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const statusRef = useRef<ConnectionStatus>('idle');
   const manualCloseRef = useRef(false);
-  const setupCompleteRef = useRef(false);
+  const gatewayReadyRef = useRef(false);
   const pendingPromptRef = useRef<string | null>(null);
   const mutedRef = useRef(false);
   // Reply timing: when the current model turn started, and when the last user input ended.
@@ -134,6 +166,9 @@ export function useGeminiLive() {
   const endingRef = useRef(false);
   const farewellAudioRef = useRef(false);
   const endTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ticketAbortRef = useRef<AbortController | null>(null);
+  const sessionGenerationRef = useRef(0);
 
   const updateStatus = useCallback((next: ConnectionStatus) => {
     statusRef.current = next;
@@ -183,9 +218,16 @@ export function useGeminiLive() {
   }, []);
 
   const teardown = useCallback(() => {
+    sessionGenerationRef.current += 1;
+    ticketAbortRef.current?.abort();
+    ticketAbortRef.current = null;
     if (endTimerRef.current) {
       clearTimeout(endTimerRef.current);
       endTimerRef.current = null;
+    }
+    if (playbackDoneTimerRef.current) {
+      clearTimeout(playbackDoneTimerRef.current);
+      playbackDoneTimerRef.current = null;
     }
     endingRef.current = false;
     farewellAudioRef.current = false;
@@ -205,7 +247,7 @@ export function useGeminiLive() {
       audioQueueRef.current.close();
       audioQueueRef.current = null;
     }
-    setupCompleteRef.current = false;
+    gatewayReadyRef.current = false;
     modelTurnActiveRef.current = false;
     mutedRef.current = false;
     setIsMuted(false);
@@ -214,7 +256,8 @@ export function useGeminiLive() {
     setConnectedAt(null);
   }, []);
 
-  const fail = useCallback((message: string) => {
+  const fail = useCallback((message: string, generation?: number) => {
+    if (generation !== undefined && generation !== sessionGenerationRef.current) return;
     teardown();
     finalizeTranscript();
     pendingPromptRef.current = null;
@@ -226,6 +269,14 @@ export function useGeminiLive() {
   const disconnect = useCallback(() => {
     const wasActive = statusRef.current === 'connected' || statusRef.current === 'connecting';
     manualCloseRef.current = true;
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      try {
+        sendVoiceMessage(ws, { type: 'end' });
+      } catch {
+        // The socket is already closing; teardown below remains authoritative.
+      }
+    }
     teardown();
     finalizeTranscript();
     pendingPromptRef.current = null;
@@ -242,12 +293,7 @@ export function useGeminiLive() {
 
   /** Send a text turn. Hidden turns (greeting, goodbye) stay out of the transcript and timeline. */
   const sendPrompt = useCallback((ws: WebSocket, text: string, hidden = false) => {
-    ws.send(JSON.stringify({
-      clientContent: {
-        turns: [{ role: 'user', parts: [{ text }] }],
-        turnComplete: true,
-      },
-    }));
+    sendVoiceMessage(ws, { type: 'text', text });
     if (hidden) return;
     promptSentAtRef.current = Date.now();
     setTranscript(prev => [
@@ -264,146 +310,151 @@ export function useGeminiLive() {
     setReplyLatencyMs(null);
     pendingPromptRef.current = initialPrompt ?? null;
 
-    if (!API_KEY) {
-      console.error("Missing NEXT_PUBLIC_GEMINI_API_KEY environment variable.");
-      fail('The Gemini API key is missing. Add NEXT_PUBLIC_GEMINI_API_KEY to .env.local and restart the app.');
+    if (!VOICE_WS_URL) {
+      fail('The voice WebSocket address is not configured.');
+      return;
+    }
+
+    let parsedVoiceUrl: URL;
+    try {
+      parsedVoiceUrl = new URL(VOICE_WS_URL);
+      if (parsedVoiceUrl.protocol !== 'ws:' && parsedVoiceUrl.protocol !== 'wss:') throw new Error('Invalid protocol');
+    } catch {
+      fail('The voice WebSocket address is invalid.');
       return;
     }
 
     manualCloseRef.current = false;
     updateStatus('connecting');
     logEvent('connecting', 'Connecting to Aya');
+    const generation = ++sessionGenerationRef.current;
 
     try {
-      // Initialize audio tools
       audioQueueRef.current = new AudioQueue();
       audioQueueRef.current.setVolume(getVolumeSnapshot());
       await audioQueueRef.current.resume();
+      if (generation !== sessionGenerationRef.current) return;
 
-      audioRecorderRef.current = new AudioRecorder();
+      const recorder = new AudioRecorder();
+      audioRecorderRef.current = recorder;
+      recorder.setMuted(mutedRef.current);
 
-      const ws = new WebSocket(WS_URL);
+      recorder.onSilence = () => {
+        if (generation !== sessionGenerationRef.current) return;
+        setIsUserSpeaking(false);
+      };
+
+      recorder.onSpeech = () => {
+        if (generation !== sessionGenerationRef.current) return;
+        if (playbackDoneTimerRef.current) {
+          clearTimeout(playbackDoneTimerRef.current);
+          playbackDoneTimerRef.current = null;
+        }
+        audioQueueRef.current?.stop();
+        setIsSpeaking(false);
+        setIsUserSpeaking(true);
+        logEvent('user-speaking', 'You are speaking');
+      };
+
+      recorder.onDeviceEnded = () => {
+        fail('The microphone was disconnected. Reconnect it and try again.', generation);
+      };
+
+      recorder.onAudioData = (base64Data) => {
+        if (generation !== sessionGenerationRef.current || !gatewayReadyRef.current || mutedRef.current) return;
+        const activeSocket = wsRef.current;
+        if (activeSocket?.readyState === WebSocket.OPEN) {
+          sendVoiceMessage(activeSocket, { type: 'audio', data: base64Data });
+        }
+      };
+
+      // Ask for microphone permission before consuming a one-time backend ticket.
+      try {
+        await recorder.start();
+      } catch (micError) {
+        console.warn('Microphone failed to start:', micError);
+        fail(describeMicError(micError), generation);
+        return;
+      }
+      if (generation !== sessionGenerationRef.current) return;
+
+      const ticketController = new AbortController();
+      ticketAbortRef.current = ticketController;
+      const ticketTimer = window.setTimeout(() => ticketController.abort(), TICKET_REQUEST_TIMEOUT_MS);
+      let ticket;
+      try {
+        ticket = await requestVoiceTicket(ticketController.signal);
+      } finally {
+        window.clearTimeout(ticketTimer);
+        if (ticketAbortRef.current === ticketController) ticketAbortRef.current = null;
+      }
+      if (generation !== sessionGenerationRef.current) return;
+
+      const ws = new WebSocket(parsedVoiceUrl.toString());
       wsRef.current = ws;
 
-      ws.onopen = async () => {
-        // Send Initial Setup Message
-        const configMessage = {
-          setup: {
-            model: `models/${MODEL_NAME}`,
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: "Aoede", // Warm and friendly voice
-                  }
-                }
-              }
-            },
-            systemInstruction: {
-              parts: [{ text: AYADI_SYSTEM_PROMPT }]
-            },
-            // Text transcripts of both sides power the live activity panel.
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
-          }
-        };
-
-        ws.send(JSON.stringify(configMessage));
-
-        // Start microphone and attach callback
-        try {
-          await audioRecorderRef.current?.start();
-        } catch (micError) {
-          console.warn('Microphone failed to start:', micError);
-          fail(describeMicError(micError));
-          return;
-        }
-
-        if (wsRef.current !== ws) return;
-
-        const recorder = audioRecorderRef.current;
-        if (recorder) {
-          recorder.setMuted(mutedRef.current);
-
-          recorder.onSilence = () => {
-            // Let Gemini's server-side VAD handle response triggering.
-            // Manual turnComplete injections currently cause API 1011 parsing errors.
-            setIsSpeaking(false);
-            setIsUserSpeaking(false);
-          };
-
-          recorder.onSpeech = () => {
-            // User has started speaking — stop bot audio and re-enable mic
-            audioQueueRef.current?.stop();
-            setIsSpeaking(false);
-            setIsUserSpeaking(true);
-            logEvent('user-speaking', 'You are speaking');
-            if (audioRecorderRef.current) {
-              audioRecorderRef.current.suppressVAD = false;
-            }
-          };
-
-          recorder.onAudioData = (base64Data) => {
-            // Always send audio to Gemini (its server-side VAD needs the stream)
-            // But skip sending while bot is speaking (echo suppression)
-            if (ws.readyState === WebSocket.OPEN && !audioRecorderRef.current?.suppressVAD && !mutedRef.current) {
-              ws.send(JSON.stringify({
-                realtimeInput: {
-                  mediaChunks: [{
-                    data: base64Data,
-                    mimeType: 'audio/pcm;rate=16000'
-                  }]
-                }
-              }));
-            }
-          };
-        }
-
-        updateStatus('connected');
-        setConnectedAt(Date.now());
-        lastTurnEndAtRef.current = Date.now();
-        logEvent('connected', 'Connected to Aya');
-        logEvent('listening', 'Listening for your voice');
+      ws.onopen = () => {
+        if (generation !== sessionGenerationRef.current || wsRef.current !== ws) return;
+        sendVoiceMessage(ws, { type: 'auth', ticket: ticket.ticket });
       };
 
       ws.onmessage = async (event) => {
-        // Handle Blob to text if needed
+        if (generation !== sessionGenerationRef.current || wsRef.current !== ws) return;
         let dataStr = event.data;
         if (dataStr instanceof Blob) {
           dataStr = await dataStr.text();
+          if (generation !== sessionGenerationRef.current) return;
         } else if (typeof dataStr !== 'string') {
           console.warn('Received non-string data over WS', event.data);
           return;
         }
 
         try {
-          const response = JSON.parse(dataStr);
-
-          if (response.setupComplete) {
-            setupCompleteRef.current = true;
-            const pending = pendingPromptRef.current;
-            pendingPromptRef.current = null;
-            // Answer the question the call was started with, or have Aya open with a greeting.
-            if (ws.readyState === WebSocket.OPEN) {
-              if (pending) sendPrompt(ws, pending);
-              else sendPrompt(ws, GREETING_PROMPT, true);
-            }
+          const response = parseVoiceServerMessage(JSON.parse(dataStr));
+          if (!response) {
+            fail('The voice service sent an invalid message.', generation);
+            return;
           }
 
-          if (response.serverContent) {
-            const serverContent = response.serverContent;
-
-            if (serverContent.inputTranscription?.text) {
-              appendTranscript('user', serverContent.inputTranscription.text);
+          switch (response.type) {
+            case 'connecting':
+              return;
+            case 'ready': {
+              if (
+                (response.inputAudio &&
+                  (response.inputAudio.encoding !== 'pcm_s16le' ||
+                    response.inputAudio.sampleRate !== VOICE_INPUT_SAMPLE_RATE ||
+                    response.inputAudio.channels !== 1)) ||
+                (response.outputAudio &&
+                  (response.outputAudio.encoding !== 'pcm_s16le' ||
+                    response.outputAudio.sampleRate !== VOICE_OUTPUT_SAMPLE_RATE ||
+                    response.outputAudio.channels !== 1))
+              ) {
+                fail('The voice service reported an unsupported audio format.', generation);
+                return;
+              }
+              if (gatewayReadyRef.current) return;
+              gatewayReadyRef.current = true;
+              updateStatus('connected');
+              setConnectedAt(Date.now());
+              lastTurnEndAtRef.current = Date.now();
+              logEvent('connected', 'Connected to Aya');
+              logEvent('listening', 'Listening for your voice');
+              const pending = pendingPromptRef.current;
+              pendingPromptRef.current = null;
+              if (ws.readyState === WebSocket.OPEN) {
+                if (pending) sendPrompt(ws, pending);
+                else sendPrompt(ws, GREETING_PROMPT, true);
+              }
+              return;
             }
-
-            if (serverContent.outputTranscription?.text) {
-              appendTranscript('aya', serverContent.outputTranscription.text);
-            }
-
-            // Check for Audio
-            if (serverContent.modelTurn?.parts) {
+            case 'input_transcription':
+              appendTranscript('user', response.text);
+              return;
+            case 'output_transcription':
+              appendTranscript('aya', response.text);
+              return;
+            case 'audio':
               if (!modelTurnActiveRef.current) {
                 modelTurnActiveRef.current = true;
                 const lastInputAt = Math.max(
@@ -417,67 +468,82 @@ export function useGeminiLive() {
                 finalizeTranscript('user');
                 logEvent('aya-speaking', 'Aya is replying');
               }
+              if (playbackDoneTimerRef.current) {
+                clearTimeout(playbackDoneTimerRef.current);
+                playbackDoneTimerRef.current = null;
+              }
               setIsSpeaking(true);
               if (endingRef.current) farewellAudioRef.current = true;
-              // Suppress mic VAD while bot audio plays (echo suppression)
               if (audioRecorderRef.current) {
                 audioRecorderRef.current.suppressVAD = true;
               }
-              for (const part of serverContent.modelTurn.parts) {
-                if (part.inlineData) {
-                  // Play the received audio via our Queue
-                  const audioData = part.inlineData.data;
-                  audioQueueRef.current?.playBase64PCM(audioData, 24000);
-                }
+              audioQueueRef.current?.playBase64PCM(response.data, VOICE_OUTPUT_SAMPLE_RATE);
+              return;
+            case 'interrupted':
+              if (playbackDoneTimerRef.current) {
+                clearTimeout(playbackDoneTimerRef.current);
+                playbackDoneTimerRef.current = null;
               }
-            }
-
-            if (serverContent.interrupted) {
               audioQueueRef.current?.stop();
-              // Audio before this point belonged to the reply the goodbye cut off.
               farewellAudioRef.current = false;
+              setIsSpeaking(false);
+              if (audioRecorderRef.current) audioRecorderRef.current.suppressVAD = false;
               if (modelTurnActiveRef.current) {
                 modelTurnActiveRef.current = false;
                 lastTurnEndAtRef.current = Date.now();
                 finalizeTranscript('aya', true);
                 logEvent('interrupted', 'You interrupted Aya');
               }
-            }
-
-            // When the bot's turn is complete, re-enable mic after a short delay
-            if (serverContent.turnComplete) {
+              return;
+            case 'turn_complete': {
               modelTurnActiveRef.current = false;
               lastTurnEndAtRef.current = Date.now();
               finalizeTranscript();
               logEvent('turn-complete', 'Aya finished replying');
-              // The goodbye has been fully received: hang up when it finishes playing.
               if (endingRef.current && farewellAudioRef.current) hangUpAfterPlayback();
-              setTimeout(() => {
+              if (playbackDoneTimerRef.current) clearTimeout(playbackDoneTimerRef.current);
+              const playbackRemaining = audioQueueRef.current?.remainingMs ?? 0;
+              playbackDoneTimerRef.current = setTimeout(() => {
+                if (generation !== sessionGenerationRef.current) return;
+                playbackDoneTimerRef.current = null;
                 setIsSpeaking(false);
                 if (audioRecorderRef.current) {
                   audioRecorderRef.current.suppressVAD = false;
                 }
-              }, 300); // 300ms grace period for echo to fade
+              }, playbackRemaining + 300);
+              return;
             }
+            case 'error':
+              fail(response.message || 'The voice service encountered an error.', generation);
+              return;
           }
         } catch (err) {
           console.error("Failed to parse socket message", err);
+          fail('The voice service sent an invalid message.', generation);
         }
       };
 
       ws.onclose = (closeEvent) => {
-        if (manualCloseRef.current || wsRef.current !== ws) return;
+        if (manualCloseRef.current || generation !== sessionGenerationRef.current || wsRef.current !== ws) return;
         const reason = closeEvent.reason ? `: ${closeEvent.reason}` : '';
-        fail(`The connection to Gemini closed unexpectedly (code ${closeEvent.code}${reason}).`);
+        const message = closeEvent.code === 1008
+          ? 'The voice session could not be authenticated. Please start a new session.'
+          : `The voice connection closed unexpectedly (code ${closeEvent.code}${reason}).`;
+        fail(message, generation);
       };
 
       ws.onerror = (wsError) => {
+        if (generation !== sessionGenerationRef.current) return;
         console.error('WebSocket Error:', wsError);
       };
 
     } catch (e: unknown) {
+      if (generation !== sessionGenerationRef.current) return;
       console.error('Failed to start:', e);
-      fail('Could not start the conversation. Check your connection and try again.');
+      const message = e instanceof Error && e.message
+        ? e.message
+        : 'Could not start the conversation. Check your connection and try again.';
+      fail(message, generation);
     }
   }, [fail, updateStatus, logEvent, appendTranscript, finalizeTranscript, sendPrompt, hangUpAfterPlayback]);
 
@@ -490,7 +556,7 @@ export function useGeminiLive() {
     if (
       endingRef.current ||
       statusRef.current !== 'connected' ||
-      !setupCompleteRef.current ||
+      !gatewayReadyRef.current ||
       !ws ||
       ws.readyState !== WebSocket.OPEN
     ) {
@@ -515,7 +581,7 @@ export function useGeminiLive() {
   const askTopic = useCallback((text: string) => {
     if (endingRef.current) return;
     const ws = wsRef.current;
-    if (statusRef.current === 'connected' && setupCompleteRef.current && ws?.readyState === WebSocket.OPEN) {
+    if (statusRef.current === 'connected' && gatewayReadyRef.current && ws?.readyState === WebSocket.OPEN) {
       // Stop any reply in progress so the new topic is answered right away.
       audioQueueRef.current?.stop();
       sendPrompt(ws, text);
@@ -566,8 +632,6 @@ export function useGeminiLive() {
 
   return {
     status,
-    isConnected: status === 'connected',
-    isConnecting: status === 'connecting',
     error,
     isSpeaking,
     isUserSpeaking,
